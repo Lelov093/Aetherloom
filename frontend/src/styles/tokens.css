@@ -1,0 +1,130 @@
+:root {
+  color-scheme: light;
+  --neutral-0: #fff;
+  --neutral-25: #fcfcfb;
+  --neutral-50: #f7f8f6;
+  --neutral-100: #f1f5f7;
+  --neutral-200: #e7eef0;
+  --neutral-300: #d7e2e6;
+  --neutral-400: #bdcdd3;
+  --neutral-600: #71838d;
+  --neutral-700: #60727d;
+  --neutral-800: #3d505b;
+  --neutral-900: #263640;
+  --sky-50: #eaf7ff;
+  --sky-100: #e1f5fe;
+  --sky-200: #b3e5fc;
+  --sky-400: #66a6ff;
+  --sky-500: #4facfe;
+  --sky-600: #209cff;
+  --sky-700: #167bcf;
+  --aqua-100: #ddf8fd;
+  --aqua-300: #9afdff;
+  --aqua-400: #7de2fc;
+  --lavender-100: #f1eefa;
+  --lavender-400: #b9b6e5;
+  --rose-100: #fce8ee;
+  --rose-200: #fcd1db;
+  --mint-100: #e6f8f4;
+  --mint-500: #68e0cf;
+  --warm-50: #fff9f2;
+  --warm-200: #fcf4e7;
+  --warm-300: #ffd9b5;
+  --surface-reader: #fffdfa;
+  --surface-context: #f9fbfc;
+  --surface-canvas: var(--neutral-50);
+  --surface-workspace: var(--neutral-25);
+  --surface-panel: #f2f7fa;
+  --surface-card: var(--neutral-0);
+  --surface-subtle: #f1f6f8;
+  --surface-selected: var(--sky-50);
+  --surface-floating: rgb(255 255 255 / 0.9);
+  --surface-overlay: rgb(38 54 64 / 0.24);
+  --text-primary: var(--neutral-900);
+  --text-secondary: var(--neutral-700);
+  --text-muted: #8b9aa2;
+  --text-readable-muted: var(--neutral-700);
+  --text-disabled: #b5c0c5;
+  --text-inverse: #f8fbfc;
+  --text-link: #17649b;
+  --border-subtle: var(--neutral-200);
+  --border-default: var(--neutral-300);
+  --border-strong: var(--neutral-400);
+  --focus-ring: #17649b;
+  --action-primary: var(--sky-500);
+  --action-primary-hover: #3da4fc;
+  --action-primary-active: var(--sky-600);
+  --action-on-primary: var(--neutral-900);
+  --action-on-primary-active: #172a35;
+  --semantic-success: #59a985;
+  --semantic-success-text: #276348;
+  --semantic-warning: #d59b45;
+  --semantic-warning-text: #785113;
+  --semantic-error: #d85e68;
+  --semantic-error-text: #a12c40;
+  --semantic-blocking: #bd3f4a;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-float: 18px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --elevation-0: none;
+  --elevation-1: 0 3px 12px rgb(65 95 115 / 0.06);
+  --elevation-2: 0 8px 30px rgb(65 95 115 / 0.12);
+  --elevation-3: 0 20px 65px rgb(38 54 64 / 0.18);
+  --font-ui: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-writing:
+    "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-title: 28px;
+  --motion-micro: 160ms;
+  --motion-structural: 220ms;
+  --ease-gentle: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --shell-rail: 88px;
+  --shell-topbar: 76px;
+  --graph-edge-default: #8197a5;
+  --graph-edge-focus: #17649b;
+  --graph-focus-halo: var(--aqua-400);
+  --graph-node-background: var(--surface-card);
+  --graph-node-selected: var(--sky-100);
+  --review-current: var(--sky-50);
+  --review-candidate: var(--warm-50);
+  --narrative-notable: var(--lavender-100);
+  --narrative-major: var(--warm-200);
+}
+[data-workspace="create"] {
+  --workspace-atmosphere: var(--warm-50);
+  --workspace-space: var(--space-6);
+}
+[data-workspace="explore"] {
+  --workspace-atmosphere: var(--sky-50);
+  --workspace-space: var(--space-5);
+}
+[data-workspace="simulate"] {
+  --workspace-atmosphere: var(--aqua-100);
+  --workspace-space: var(--space-5);
+}
+[data-workspace="review"] {
+  --workspace-atmosphere: var(--surface-panel);
+  --workspace-space: var(--space-4);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-micro: 0ms;
+    --motion-structural: 0ms;
+  }
+}

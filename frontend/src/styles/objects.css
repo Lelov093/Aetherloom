@@ -1,0 +1,159 @@
+/* Shared browsing stays transient; the primary workspace retains its space. */
+.entity-key-properties {
+  margin: 20px 0;
+  padding: 16px 20px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.entity-key-properties header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.entity-key-properties h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.entity-key-properties dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 28px;
+  margin: 12px 0 0;
+}
+.entity-key-properties dl > div { min-width: 90px; max-width: 100%; }
+.entity-key-properties dt,
+.entity-key-time { font-size: 12px; color: var(--text-secondary); }
+.entity-key-properties dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+.dialog:has(.object-browser) {
+  width: min(980px, calc(100vw - 48px));
+}
+.object-browser-filters {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+}
+.object-browser-filters > .field:first-child {
+  flex: 1;
+}
+.object-browser-types {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.object-browser-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  min-height: 180px;
+}
+.object-browser-list,
+.object-browser-detail {
+  max-height: 34vh;
+  overflow: auto;
+  min-width: 0;
+}
+.object-browser-detail {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: 24px;
+}
+.object-browser-row {
+  display: block;
+  text-align: left;
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-md);
+  padding: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.object-browser-row:hover {
+  background: var(--surface-subtle);
+}
+.object-browser-row.selected {
+  background: var(--sky-50);
+  border-color: var(--border-subtle);
+}
+.object-browser-row small {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.object-browser-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.object-browser-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+  font-size: 12px;
+}
+.object-browser-back {
+  display: none;
+}
+.object-quick-inspector h3 {
+  margin-top: 8px;
+  font-family: var(--font-writing);
+}
+.object-quick-inspector dl > div {
+  margin: 18px 0;
+}
+.object-quick-inspector dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.object-quick-inspector dd {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.object-inspector-link {
+  display: block;
+  margin: 10px 0;
+  color: var(--text-link);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.object-browser-empty {
+  align-self: center;
+  justify-self: center;
+}
+.object-choice {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.object-choice > .button:first-child {
+  flex: 1;
+  justify-content: space-between;
+  text-align: left;
+}
+@media (max-width: 1100px) {
+  .object-browser-body {
+    display: block;
+  }
+  .object-browser-body.has-selection .object-browser-list,
+  .object-browser-empty {
+    display: none;
+  }
+  .object-browser-detail {
+    border: 0;
+    padding: 0;
+  }
+  .object-browser-back {
+    display: inline-flex;
+  }
+}
+@media (max-width: 600px) {
+  .object-browser-filters {
+    display: block;
+  }
+}

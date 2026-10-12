@@ -1,0 +1,120 @@
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { Button, ErrorNotice } from "../../components/ui";
+import {
+  catalogApi,
+  type ObjectDetail,
+  type ObjectRef,
+  objectTypeNames,
+} from "./api";
+
+export function ObjectInspector({
+  world,
+  object,
+  onNavigate,
+}: {
+  world: string;
+  object: ObjectRef;
+  onNavigate?: () => void;
+}) {
+  const [detail, setDetail] = useState<ObjectDetail>(),
+    [error, setError] = useState(""),
+    [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setDetail(undefined);
+    setError("");
+    catalogApi
+      .inspect(world, object)
+      .then((value) => {
+        if (active) setDetail(value);
+      })
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [world, object.id, object.type, retry]);
+  return (
+    <section className="object-quick-inspector" aria-label="对象快速资料">
+      <span className="eyebrow">{object.context}</span>
+      <h3>{object.label}</h3>
+      <p className="context-hint">
+        {objectTypeNames[object.type]} · {object.subtitle}
+      </p>
+      {error && (
+        <>
+          <ErrorNotice>{error}</ErrorNotice>
+          <Button type="button" onClick={() => setRetry((v) => v + 1)}>
+            重新读取资料
+          </Button>
+        </>
+      )}
+      {!detail && !error && <p role="status">正在读取资料…</p>}
+      {detail && (
+        <>
+          {object.type === 'entity' && onNavigate && <Link className="text-link" to={`${object.to}?tab=ai`} onClick={onNavigate}>可选 AI 提案辅助 →</Link>}
+          <dl>
+            {detail.fields.map((field, i) => (
+              <div key={i}>
+                <dt>{field.label}</dt>
+                <dd>{field.text}</dd>
+              </div>
+            ))}
+          </dl>
+          {!detail.fields.length && (
+            <p className="context-hint">尚未填写详细说明。</p>
+          )}
+          {!!detail.references.length && (
+            <>
+              <h4>关联内容</h4>
+              {detail.references.map((ref, i) =>
+                onNavigate ? (
+                  <Link
+                    key={i}
+                    className="object-inspector-link"
+                    to={ref.to}
+                    onClick={onNavigate}
+                  >
+                    {ref.label} →
+                  </Link>
+                ) : (
+                  <p key={i}>{ref.label}</p>
+                ),
+              )}
+            </>
+          )}
+          {!!detail.sources.length && (
+            <>
+              <h4>来源</h4>
+              {detail.sources.map((source, i) =>
+                source.download ? (
+                  <a
+                    key={i}
+                    className="object-inspector-link"
+                    href={source.to}
+                    download
+                  >
+                    {source.label} · 下载原件
+                  </a>
+                ) : onNavigate ? (
+                  <Link
+                    key={i}
+                    className="object-inspector-link"
+                    to={source.to}
+                    onClick={onNavigate}
+                  >
+                    {source.label} →
+                  </Link>
+                ) : (
+                  <p key={i}>{source.label}</p>
+                ),
+              )}
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
