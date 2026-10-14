@@ -20,9 +20,10 @@ export function ObjectInspector({
   const [detail, setDetail] = useState<ObjectDetail>(),
     [error, setError] = useState(""),
     [retry, setRetry] = useState(0);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let active = true;
-    setDetail(undefined);
+    setLoading(true);
     setError("");
     catalogApi
       .inspect(world, object)
@@ -31,17 +32,17 @@ export function ObjectInspector({
       })
       .catch((e) => {
         if (active) setError(e.message);
-      });
+      }).finally(() => { if (active) setLoading(false); });
     return () => {
       active = false;
     };
   }, [world, object.id, object.type, retry]);
   return (
     <section className="object-quick-inspector" aria-label="对象快速资料">
-      <span className="eyebrow">{object.context}</span>
-      <h3>{object.label}</h3>
+      <span className="eyebrow">{detail?.item.context || object.context}</span>
+      <h3>{detail?.item.label || object.label}</h3>
       <p className="context-hint">
-        {objectTypeNames[object.type]} · {object.subtitle}
+        {objectTypeNames[detail?.item.type || object.type]} · {detail?.item.subtitle || object.subtitle}
       </p>
       {error && (
         <>
@@ -51,10 +52,9 @@ export function ObjectInspector({
           </Button>
         </>
       )}
-      {!detail && !error && <p role="status">正在读取资料…</p>}
+      {loading && !error && <p role="status">正在读取{object.label}的资料…</p>}
       {detail && (
-        <>
-          {object.type === 'entity' && onNavigate && <Link className="text-link" to={`${object.to}?tab=ai`} onClick={onNavigate}>可选 AI 提案辅助 →</Link>}
+        <div aria-busy={loading} inert={loading || !!error}>
           <dl>
             {detail.fields.map((field, i) => (
               <div key={i}>
@@ -113,7 +113,7 @@ export function ObjectInspector({
               )}
             </>
           )}
-        </>
+        </div>
       )}
     </section>
   );

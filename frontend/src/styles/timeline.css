@@ -1,0 +1,81 @@
+/* Canon chronology shares Explore's light, quiet panels. Marks carry the data. */
+.explore-surface { display:flex; flex:1; min-height:0; min-width:0; }
+.explore-surface[hidden] { display:none; }
+.explore-mode-bar { display:flex; align-items:center; gap:12px; padding:8px 14px; border-bottom:1px solid #e2ecf2; background:#fbfdff; flex:none; flex-wrap:wrap; }
+.explore-mode-switch { display:flex; padding:3px; gap:3px; border:1px solid #dfebf1; border-radius:9px; background:#f0f6f9; }
+.explore-mode-switch button { display:flex; align-items:center; justify-content:center; gap:6px; border:0; border-radius:6px; background:transparent; padding:5px 12px; color:#5b778a; font-size:12px; }
+.explore-mode-switch button[aria-pressed="true"] { background:#fff; color:#24789e; box-shadow:0 1px 5px #a4c6d83c; }
+.explore-mode-bar > span { font-size:12px; color:#4c7089; }
+.explore-mode-bar > small { margin-left:auto; font-size:10px; color:#6b8393; }
+.year-inputs { display:flex; align-items:center; gap:7px; }
+.year-inputs label { display:block; flex:1; min-width:0; font-size:10px; color:#678195; }
+.year-inputs input { display:block; margin-top:5px; width:100%; min-width:0; padding:7px 8px; font-size:12px; border:1px solid #d9e7ef; border-radius:8px; background:#fff; color:#436c82; outline-offset:2px; }
+.year-inputs > span { margin-top:18px; color:#7897a6; }
+.year-actions { display:flex; gap:6px; margin-top:9px; }
+.year-actions .button { min-height:27px; padding:4px 9px; font-size:11px; }
+.year-error { color:#ad634c!important; }
+.timeline-counts { display:grid; gap:7px; border-top:1px solid #e2ecf2; padding-top:12px; margin-top:10px; font-size:11px; color:#637f92; }
+.timeline-counts > span { display:flex; justify-content:space-between; }
+.timeline-counts strong { color:#436a80; font-weight:500; }
+.timeline-surface { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; background:linear-gradient(150deg,#f4fafc,#fcfdfd 55%,#f5fafb); }
+.timeline-tools { display:flex; flex:none; gap:8px; align-items:center; justify-content:space-between; padding:8px 14px; border-bottom:1px solid #e0ecf3; }
+.timeline-tools > span { display:flex; align-items:center; gap:6px; font-size:12px; color:#52798e; }
+.timeline-tools small { font-size:10px; color:#6a8595; margin-left:6px; }
+.timeline-tools > div { display:flex; }
+.timeline-scroll { flex:1; min-height:0; overflow:auto; scrollbar-width:thin; scrollbar-color:#cbdfe8 transparent; overscroll-behavior:contain; }
+.timeline-ruler { display:flex; height:49px; position:sticky; top:0; z-index:3; background:#f9fcfef5; backdrop-filter:blur(8px); border-bottom:1px solid #dce9ef; }
+.timeline-ruler-label { width:144px; flex:none; display:flex; align-items:center; padding-left:17px; color:#668495; font-size:11px; }
+.timeline-ruler-track { flex:1; min-width:0; position:relative; overflow:hidden; }
+.timeline-ruler-empty { display:block; padding:16px 10px; font-size:11px; color:#738b9a; }
+.timeline-ruler-track button { position:absolute; top:8px; transform:translateX(-50%); border:0; background:transparent; font-size:12px; color:#4c728c; padding:3px 6px 17px; border-radius:5px; }
+.timeline-ruler-track button:hover,.timeline-ruler-track button.is-selected { color:#227dad; background:#e5f4fc; }
+.timeline-ruler-track button i { position:absolute; bottom:0; left:50%; width:1px; height:7px; background:#a5c5d4; }
+.timeline-lanes { min-height:260px; outline-offset:-3px; cursor:grab; }
+.timeline-lanes:active { cursor:grabbing; }
+.timeline-lane { display:flex; border-bottom:1px solid #e3edf1; min-height:84px; }
+.timeline-lane-label { width:144px; flex:none; display:flex; align-items:flex-start; gap:8px; padding:19px 10px 10px 16px; border-right:1px solid #dde9f0; font-size:12px; color:#46697c; background:#f9fcfd90; }
+.timeline-lane-label > svg { flex:none; margin-top:2px; color:#7097ad; }
+.timeline-lane-label > span { min-width:0; overflow-wrap:anywhere; }
+.timeline-lane-label small { display:block; color:#6f8797; font-size:10px; margin-top:4px; }
+.timeline-lane-track { position:relative; flex:1; min-width:0; overflow:hidden; }
+.timeline-grid { position:absolute; width:1px; background:#e3eef4; top:0; bottom:0; pointer-events:none; }
+.timeline-cursor { position:absolute; width:2px; top:0; bottom:0; background:#51b2d5; box-shadow:0 0 10px #49b4d64a; z-index:1; pointer-events:none; }
+.timeline-item { --mark:#5198b6; position:absolute; height:48px; border:0; padding:0; background:transparent; color:#406d83; text-align:left; cursor:pointer; border-radius:6px; z-index:2; outline-offset:4px; }
+.layer-relationship .timeline-item { --mark:#898dc1; }
+.layer-assertion .timeline-item { --mark:#61a99b; }
+.timeline-item-bar { position:absolute; top:0; left:0; width:100%; height:6px; background:color-mix(in srgb,var(--mark) 48%,#fff); border-radius:8px; transition:background 160ms,box-shadow 160ms; }
+.timeline-item-bar::before,.timeline-item.is-interval .timeline-item-bar::after { content:''; position:absolute; width:7px; height:7px; top:-.5px; border-radius:50%; background:var(--mark); border:1px solid #fff; }
+.timeline-item-bar::before { left:0; }
+.timeline-item.is-interval .timeline-item-bar::after { right:0; }
+.timeline-item.is-boundary .timeline-item-bar { background:transparent; height:8px; width:8px; border:1px solid var(--mark); transform:rotate(45deg); }
+.timeline-item.is-boundary .timeline-item-bar::before { display:none; }
+.timeline-item.is-year-event .timeline-item-bar { width:9px; height:9px; border-radius:50%; background:var(--mark); }
+.timeline-item.is-year-event .timeline-item-bar::before { display:none; }
+.timeline-item.is-clipped .timeline-item-bar { border-radius:0; }
+.timeline-item:hover .timeline-item-bar,.timeline-item.is-selected .timeline-item-bar { background:var(--mark); box-shadow:0 0 0 4px color-mix(in srgb,var(--mark) 13%,transparent); }
+.timeline-item-label { position:absolute; top:13px; left:0; width:190px; pointer-events:none; }
+.timeline-item-label strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:500; }
+.timeline-item-label em { font-style:normal; color:#5e8395; font-weight:400; }
+.timeline-item-label small { display:block; margin-top:3px; font-size:10px; color:#718b9a; }
+.timeline-item.is-selected .timeline-item-label strong { color:#237b9e; }
+.timeline-empty { padding:55px 24px; text-align:center; color:#7194a8; cursor:default; }
+.timeline-empty h2 { font-size:18px; font-weight:500; color:#4b748a; margin:15px 0 8px; }
+.timeline-empty p { font-size:12px; line-height:1.8; }
+.timeline-pages { display:flex; gap:9px; align-items:center; justify-content:flex-end; padding:10px 15px; color:#698597; font-size:11px; border-bottom:1px solid #e4edf2; }
+.timeline-pages .button { min-height:26px; padding:4px 8px; font-size:11px; }
+.timeline-unplaced { padding:20px 17px; background:#fcfdfd; }
+.timeline-unplaced header h3 { font-size:13px; color:#527288; margin:0 0 5px; }
+.timeline-unplaced h3 small { font-size:10px; font-weight:400; margin-left:6px; }
+.timeline-unplaced header p { font-size:11px; color:#738997; margin:0 0 13px; }
+.timeline-unplaced-row { display:flex; width:100%; gap:15px; justify-content:space-between; padding:11px 8px; border:0; border-bottom:1px solid #e6eef2; border-radius:6px; background:transparent; color:#4b6c83; text-align:left; font-size:12px; }
+.timeline-unplaced-row:hover,.timeline-unplaced-row.is-selected { background:#eef7fc; }
+.timeline-unplaced-row > span { max-width:60%; overflow-wrap:anywhere; }
+.timeline-unplaced-row strong { font-weight:500; }
+.timeline-unplaced-row small { display:block; font-size:10px; color:#738b9a; margin-top:4px; }
+.timeline-unplaced .timeline-pages { border:0; padding-right:0; }
+.timeline-selection { display:flex; gap:10px; align-items:center; justify-content:space-between; flex:none; min-height:37px; padding:6px 13px; border-top:1px solid #dfebf1; background:#fafdff; font-size:10px; color:#678596; }
+.timeline-selection > span { display:flex; align-items:center; gap:6px; min-width:0; overflow-wrap:anywhere; }
+.timeline-selection .button { font-size:11px; min-height:25px; padding:4px 7px; flex:none; }
+@media(max-width:1250px) { .explore-mode-bar > small,.timeline-tools small { display:none; } }
+@media(max-width:700px) { .timeline-ruler-label,.timeline-lane-label { width:115px; padding-left:10px; } .timeline-tools { padding:6px 8px; } .timeline-tools > span { font-size:10px; } .timeline-tools .explore-icon { width:27px; } .timeline-item-label { width:150px; } .timeline-unplaced { padding:16px 10px; } }
+@media(prefers-reduced-motion:reduce) { .timeline-surface * { transition:none!important; scroll-behavior:auto!important; } }

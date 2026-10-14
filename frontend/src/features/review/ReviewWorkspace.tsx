@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   CheckCheck,
-  Inbox as InboxIcon,
   RotateCcw,
   SlidersHorizontal,
 } from "lucide-react";
@@ -11,6 +10,8 @@ import { ExtractionDiagnostics } from "./ExtractionDiagnostics";
 import { creationApi, entityKinds, type Entity } from "../creation/api";
 import { EntityMark } from "../../components/EntityMark";
 import { ReviewDetail } from "./ReviewDetail";
+import { ReviewFrame, ReviewInboxHeader, ReviewStatusTabs } from "./ReviewFrame";
+import { useReviewPreview } from "./useReviewPreview";
 import {
   reviewApi,
   fieldTypeNames,
@@ -37,7 +38,6 @@ export function ReviewWorkspace({ world }: { world: string }) {
   const [params, setParams] = useSearchParams(),
     selectedId = params.get("candidate");
   const [inbox, setInbox] = useState<Inbox>(),
-    [preview, setPreview] = useState<Preview>(),
     [entities, setEntities] = useState<Entity[]>([]);
   const [error, setError] = useState(""),
     [status, setStatus] = useState("pending"),
@@ -56,14 +56,19 @@ export function ReviewWorkspace({ world }: { world: string }) {
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
   const [inferenceConfirmed, setInferenceConfirmed] = useState(false);
+  const comparison = useReviewPreview(world, selectedId, reviewApi.preview), preview = comparison.value;
+  const route = useRef({ world, selectedId });
+  route.current = { world, selectedId };
   async function reload() {
+    const targetWorld = world;
     const [data, objects] = await Promise.all([
       reviewApi.inbox(world),
       creationApi.entities(world),
     ]);
+    if (route.current.world !== targetWorld) return;
     setInbox(data);
     setEntities(objects);
-    if (selectedId) setPreview(await reviewApi.preview(selectedId));
+    await comparison.reload();
   }
   useEffect(() => {
     let active = true;
@@ -84,38 +89,27 @@ export function ReviewWorkspace({ world }: { world: string }) {
     };
   }, [world]);
   useEffect(() => {
-    let active = true;
-    setPreview(undefined);
-    setMessage("");
-    if (selectedId)
-      reviewApi
-        .preview(selectedId)
-        .then((p) => {
-          if (active) setPreview(p);
-        })
-        .catch((e) => {
-          if (active) setError(e.message);
-        });
-    return () => {
-      active = false;
-    };
-  }, [selectedId]);
+    setMessage(""); setConfirmation(undefined); setInferenceConfirmed(false);
+  }, [world, selectedId]);
   const tasksActive = inbox?.tasks.some((t) =>
     ["queued", "running"].includes(t.status),
   );
   useEffect(() => {
     if (!tasksActive) return;
+    let active = true;
     const timer = setInterval(
       () =>
         reviewApi
           .inbox(world)
-          .then(setInbox)
-          .catch((e) => setError(e.message)),
+          .then(value => { if (active) setInbox(value); })
+          .catch((e) => { if (active) setError(e.message); }),
       1500,
     );
-    return () => clearInterval(timer);
+    return () => { active = false; clearInterval(timer); };
   }, [tasksActive, world]);
   async function prepare(decisions: Decision[]) {
+    if (busy || (decisions.length === 1 && decisions[0].candidate_id === selectedId && (!comparison.current || comparison.loading))) return;
+    const target = route.current;
     setBusy(true);
     setError("");
     setMessage("");
@@ -166,8 +160,10 @@ export function ReviewWorkspace({ world }: { world: string }) {
           acknowledge_inference: previews[i].requires_evidence_confirmation,
         })),
       );
-      setInferenceConfirmed(false);
-      setConfirmation({ revision, decisions, previews, mergeEffects: result.merge_effects });
+      if (target.world === route.current.world && target.selectedId === route.current.selectedId) {
+        setInferenceConfirmed(false);
+        setConfirmation({ revision, decisions, previews, mergeEffects: result.merge_effects });
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -239,45 +235,10 @@ export function ReviewWorkspace({ world }: { world: string }) {
       ? `${name} · ${proposalTitle(c.payload)}`
       : proposalTitle(c.payload);
   }
-  return (
-    <main id="main-content" className="review-workspace">
+  const inboxPanel = (
       <aside className="review-inbox" aria-label="审阅收件箱">
-        <header>
-          <span className="eyebrow">REVIEW</span>
-          <h1>
-            <InboxIcon size={23} />
-            审阅收件箱
-          </h1>
-          <p>逐步整理，让世界保持清晰。</p>
-          <Link className="text-link" to={`/worlds/${world}/review/simulation`}>审阅模拟提案 →</Link>
-        </header>
-        <div className="quiet-tabs" role="tablist" aria-label="审阅状态">
-          {[
-            ["pending", "待处理"],
-            ["processed", "已处理"],
-            ["all", "全部"],
-          ].map(([id, name]) => (
-            <button
-              role="tab"
-              key={id}
-              aria-selected={status === id}
-              onClick={() => {
-                setStatus(id);
-                setSelected([]);
-              }}
-            >
-              {name}
-              {id === "pending" && (
-                <span>
-                  {" "}
-                  {inbox?.candidates.filter((c) =>
-                    ["pending", "later"].includes(c.status),
-                  ).length || 0}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        <ReviewInboxHeader world={world}/>
+        <ReviewStatusTabs status={status} pending={inbox?.candidates.filter(c => ['pending', 'later'].includes(c.status)).length || 0} onChange={value => { setStatus(value); setSelected([]); }}/>
         <details className="review-filter-panel">
           <summary>
             <SlidersHorizontal size={15} />
@@ -437,6 +398,7 @@ export function ReviewWorkspace({ world }: { world: string }) {
                 />
               )}
               <button
+                type="button" disabled={busy} aria-current={selectedId === c.id ? "true" : undefined}
                 onClick={() => {
                   setError("");
                   setParams({ candidate: c.id });
@@ -477,7 +439,7 @@ export function ReviewWorkspace({ world }: { world: string }) {
           ))}
           {inbox && !list.length && (
             <p className="review-empty">
-              当前筛选下没有候选。你可以继续写作，或从正文的 AI 面板提取。
+              当前筛选下没有提案。你可以继续整理资料，或从模拟结果中建立审阅提案。
             </p>
           )}
         </div>
@@ -515,23 +477,28 @@ export function ReviewWorkspace({ world }: { world: string }) {
           ))}
         </details>
       </aside>
-      <section className="review-primary" aria-label="审阅详情">
+  );
+  return (<>
+    <ReviewFrame inbox={inboxPanel} selection={selectedId}>
+      <section className="review-primary" aria-label="审阅详情" aria-busy={comparison.loading}>
         {error && <ErrorNotice>{error}</ErrorNotice>}
         {message && (
           <p className="review-success" role="status">
             {message}
           </p>
         )}
+        {(comparison.loading || comparison.error || (selectedId && !comparison.current)) && <div className="review-load-status" role="status">{comparison.error || '正在比较候选与当前设定…'}{comparison.error && <Button variant="ghost" onClick={() => void comparison.reload()}>重试比较</Button>}</div>}
         {preview ? (
-          <ReviewDetail
+          <div className="review-detail-holder" inert={!comparison.current || comparison.loading || busy}><ReviewDetail
             key={`${preview.candidate.id}-${preview.candidate.version}`}
             world={world}
             preview={preview}
             entities={entities}
             candidates={inbox?.candidates || []}
+            active={comparison.current && !comparison.loading && !busy}
             onReload={reload}
-            onDecision={(d) => prepare([d])}
-          />
+            onDecision={(d) => d.candidate_id === route.current.selectedId && comparison.current && !comparison.loading ? prepare([d]) : Promise.resolve()}
+          /></div>
         ) : selectedId ? (
           <p role="status">正在比较候选与当前设定…</p>
         ) : (
@@ -543,6 +510,7 @@ export function ReviewWorkspace({ world }: { world: string }) {
           </EmptyState>
         )}
       </section>
+    </ReviewFrame>
       {confirmation && (
         <Dialog
           title="确认审阅裁决"
@@ -601,6 +569,7 @@ export function ReviewWorkspace({ world }: { world: string }) {
                     明确保留独立身份 / 事件，或保留差异事实双方。
                   </p>
                 )}
+                {d.resolution === "temporal" && <p className="review-notice">按已确认的有效时间新增记录，保留不同时间的当前记录。</p>}
                 {d.action === "merge" && (
                   <div className="review-notice">
                     {confirmation.mergeEffects.filter((effect) => effect.candidate_id === d.candidate_id).map((effect) => (
@@ -678,6 +647,6 @@ export function ReviewWorkspace({ world }: { world: string }) {
           </div>
         </Dialog>
       )}
-    </main>
+    </>
   );
 }

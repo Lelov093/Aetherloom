@@ -101,6 +101,8 @@ export interface ExtractionFailures {
 }
 export interface CurrentRecord {
   id: string;
+  object_id?: string | null;
+  field_id?: string | null;
   name?: string;
   title?: string;
   description?: string;
@@ -113,6 +115,8 @@ export interface CurrentRecord {
   source_note?: string;
   sources?: { id: string; source_quote: string; source_version: number }[];
 }
+
+export interface SimulationSource { id: string; simulation_id: string; seq: number; world_id: string; title: string }
 export interface Preview {
   candidate: Candidate;
   revision: number;
@@ -161,6 +165,7 @@ const write = (body: unknown, method = "POST") => ({
   body: JSON.stringify(body),
 });
 export const reviewApi = {
+  simulationSources: (kind: string, id: string) => request<SimulationSource[]>(`/simulation-targets/${kind}/${id}/sources`),
   provider: () =>
     request<{ configured: boolean; model: string; host: string; disabled:boolean }>(`/provider`),
   inbox: (world: string) => request<Inbox>(`/worlds/${world}/review`),

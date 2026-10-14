@@ -87,7 +87,12 @@ class SimulationRepository(ReviewRepository):
     def listing(self, world):
         self.get(world)
         with self.connection() as conn:
-            return [dict(r) for r in conn.execute('SELECT id,title,status,cursor,error,calls,cost,created_at,updated_at FROM simulations WHERE world_id=? ORDER BY created_at DESC,rowid DESC', (world,))]
+            return [dict(r) for r in conn.execute('''
+                SELECT s.id,s.title,s.status,s.cursor,s.error,s.calls,s.cost,s.created_at,s.updated_at,
+                    json_extract(s.manifest,'$.setup.start_label') AS start_label,
+                    (SELECT narration FROM simulation_events WHERE simulation_id=s.id ORDER BY seq DESC LIMIT 1) AS latest_narration
+                FROM simulations s WHERE s.world_id=? ORDER BY s.created_at DESC,s.rowid DESC
+            ''', (world,))]
 
     def detail(self, identity, after=0):
         with self.connection() as conn:

@@ -60,7 +60,8 @@ def preview(repo, identity):
         return dict(candidate=value, revision=revision, baseline_stale=revision != value['baseline_revision'],
                     source={'type':'simulation','simulation_id':session['id'],'title':session['title'],'revision_id':session['revision_id'],
                             'baseline_revision':value['baseline_revision'],'seq':event['seq'],'start':session['manifest']['setup']['start_label'],
-                            'event':event,'initial_state':session['initial_state']}, **repo.comparison(conn,value))
+                            'event':event,'initial_state':session['initial_state'],
+                            'entities':session['manifest']['entities'], 'time_basis':session['manifest']['setup']['time_basis']}, **repo.comparison(conn,value))
 
 
 def edit(repo, identity, body):

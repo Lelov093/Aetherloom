@@ -8,6 +8,8 @@ import {
   ScrollText,
 } from "lucide-react";
 import { Button, ErrorNotice } from "../../components/ui";
+import { Portrait, usePortraits } from '../objects/Portrait';
+import { DisplayImage } from '../objects/DisplayImages';
 import { EntityMark } from "../../components/EntityMark";
 import { creationApi, entityKinds, type Entity } from "./api";
 import { reviewApi, type CanonRecords } from "../review/api";
@@ -18,11 +20,15 @@ export function EntityContext({
   entityId,
   entities,
   onBack,
+  onInspect,
+  backLabel = '文档上下文',
 }: {
   world: string;
   entityId: string;
   entities: Entity[];
   onBack: () => void;
+  onInspect: (entity: Entity) => void;
+  backLabel?: string;
 }) {
   const [entity, setEntity] = useState<Entity>(),
     [records, setRecords] = useState<CanonRecords>(),
@@ -30,8 +36,6 @@ export function EntityContext({
     [retry, setRetry] = useState(0);
   useEffect(() => {
     let active = true;
-    setEntity(undefined);
-    setRecords(undefined);
     setError("");
     Promise.all([
       creationApi.entity(entityId),
@@ -50,6 +54,7 @@ export function EntityContext({
       active = false;
     };
   }, [world, entityId, retry]);
+  const { portraits } = usePortraits(world);
   const objectLink = (id: string) => `/worlds/${world}/create/objects/${id}`;
   const name = (id: string) =>
     entities.find((e) => e.id === id)?.name || "查看对象";
@@ -67,37 +72,41 @@ export function EntityContext({
     <div className="entity-context">
       <Button variant="ghost" className="context-back" onClick={onBack}>
         <ArrowLeft size={14} />
-        文档上下文
+        {backLabel}
       </Button>
-      {error ? (
+      {error && (
         <>
           <ErrorNotice>{error}</ErrorNotice>
           <Button onClick={() => setRetry((n) => n + 1)}>重新读取</Button>
         </>
-      ) : !entity ? (
+      )}
+      {entity && entity.id !== entityId && !error && <p className="context-refresh" role="status">正在打开对象资料…</p>}
+      {!entity ? !error && (
         <p role="status" className="context-hint">
           正在读取对象资料…
         </p>
       ) : (
-        <>
+        <div className="context-body" aria-busy={entity.id !== entityId} inert={entity.id !== entityId || !!error}>
+          {entity.kind === 'location' && <DisplayImage owner="entity" id={entity.id} name={entity.name} version={portraits[entity.id]} className="context-scene"/>}
           <header className="context-identity">
-            <EntityMark kind={entity.kind} />
+            {entity.kind === 'character' && portraits[entity.id] ? <Portrait id={entity.id} name={entity.name} version={portraits[entity.id]}/> : <EntityMark kind={entity.kind}/>}
             <div>
               <span>{entityKinds[entity.kind]}</span>
               <h2>{entity.name}</h2>
               <small>{entity.aliases.join(" · ")}</small>
             </div>
           </header>
-          {sections.slice(0, 2).map((s, i) => (
-            <section className="context-section" key={i}>
-              <h3>
-                <ScrollText size={15} />
-                {s.title}
-              </h3>
-              <p>{s.body}</p>
-            </section>
-          ))}
-          {Object.entries(entity.core||{}).filter(([,value])=>value).map(([key,value])=><section className="context-section" key={key}><h3>{coreLabels[key]||key}</h3><p>{value}</p></section>)}
+          <section className="context-section context-overview">
+            <h3><ScrollText size={15}/>创作设定</h3>
+            <dl className="context-core">
+              {Object.entries(entity.core||{}).filter(([,value])=>value).map(([key,value])=><div key={key}>
+                <dt>{coreLabels[key]||key}</dt>
+                <dd>{value.length>90?<details><summary>{value.slice(0,60)}…</summary><p>{value}</p></details>:value}</dd>
+              </div>)}
+            </dl>
+            {!Object.values(entity.core||{}).some(Boolean)&&<p className="context-hint">尚未填写基础资料。</p>}
+            <p className="context-hint context-boundary">作者设定与计划不自动成为角色已知信息。</p>
+          </section>
           <section className="context-section">
             <h3>
               <BookOpen size={15} />
@@ -149,10 +158,10 @@ export function EntityContext({
                 const e = entities.find((e) => e.id === other);
                 return (
                   <div className="context-relation" key={r.id}>
-                    <Link to={objectLink(other)}>
-                      <EntityMark kind={e?.kind || "custom"} small />
+                    <button className="context-object-link" disabled={!e} onClick={() => e && onInspect(e)}>
+                      {e?.kind === 'character' && portraits[other] ? <Portrait id={other} name={name(other)} version={portraits[other]} size="small"/> : <EntityMark kind={e?.kind || "custom"} small />}
                       <strong>{name(other)}</strong>
-                    </Link>
+                    </button>
                     {r.states
                       .filter((s) => s.status === "active")
                       .map((s) => (
@@ -187,17 +196,21 @@ export function EntityContext({
                 事件相关地点
               </h3>
               {relatedLocations.map((id) => (
-                <Link
+                <button
                   className="context-related-object"
                   key={id}
-                  to={objectLink(id)}
+                  disabled={!entities.some(e => e.id === id)}
+                  onClick={() => { const next = entities.find(e => e.id === id); if (next) onInspect(next); }}
                 >
-                  <EntityMark kind="location" small />
+                  {portraits[id] ? <DisplayImage owner="entity" id={id} name={name(id)} version={portraits[id]} className="context-location-thumb"/> : <EntityMark kind="location" small />}
                   {name(id)}
-                </Link>
+                </button>
               ))}
             </section>
           )}
+          {sections.length>0&&<section className="context-section context-notes"><h3><ScrollText size={15}/>创作笔记</h3>
+            {sections.map((section,i)=><details key={i}><summary>{section.title}</summary><p>{section.body}</p></details>)}
+          </section>}
           <Link
             className="context-full-link text-link"
             to={objectLink(entityId)}
@@ -205,9 +218,9 @@ export function EntityContext({
             打开完整对象资料 →
           </Link>
           <MaterialSources world={world} kind="entity" identity={entityId} editable={false}/>
-          <Link className="text-link" to={`${objectLink(entityId)}?tab=ai`}>可选 AI 提案辅助 →</Link>
+
           <Link className="text-link" to={`${objectLink(entityId)}?tab=sources`}>查看与关联手工资料来源 →</Link>
-        </>
+        </div>
       )}
     </div>
   );

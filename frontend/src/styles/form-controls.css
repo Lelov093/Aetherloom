@@ -1,0 +1,86 @@
+/* Style the picker itself, not just the closed select. Electron uses Chromium. */
+select, ::picker(select) { appearance: base-select; }
+select { cursor: pointer; justify-content: space-between; gap: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color var(--motion-micro), background var(--motion-micro), box-shadow var(--motion-micro); }
+select:hover:not(:disabled), select:open { border-color: #91bbd7; background: #f4f9fd; }
+select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+select::picker-icon { content: ''; width: 7px; height: 7px; flex-shrink: 0; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; rotate: 45deg; margin: 0 3px 3px; color: var(--text-secondary); transition: rotate var(--motion-micro); }
+select:open::picker-icon { rotate: 225deg; color: var(--text-link); }
+::picker(select), .control-menu {
+  font: var(--text-base)/1.5 var(--font-ui);
+  color: var(--text-primary); background: var(--surface-reader);
+  border: 1px solid #d4e1e9; border-radius: 12px; padding: 5px;
+  box-shadow: 0 10px 32px rgb(47 73 94 / .16), 0 2px 6px rgb(47 73 94 / .06);
+  max-height: min(360px, 60vh); max-width: calc(100vw - 24px); overflow: auto;
+  overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #bdcdd3 transparent;
+}
+::picker(select) { margin-block: 5px; min-width: anchor-size(width); }
+select option { padding: 9px 12px; border-radius: 7px; white-space: normal; overflow-wrap: anywhere; gap: 14px; min-height: 36px; cursor: pointer; transition: background var(--motion-micro), color var(--motion-micro); }
+select option:hover, select option:focus { background: #edf4fa; color: #17649b; outline: none; }
+select option:checked { background: #e4effa; color: #17649b; font-weight: 600; }
+select option::checkmark { order: 1; margin-left: auto; color: #297bb2; content: '✓'; }
+select option:disabled { color: var(--text-disabled); cursor: default; }
+select optgroup { font-weight: 600; padding-block: 5px; }
+select optgroup option { font-weight: 400; }
+.creation-workspace .tree-work-picker select:is(:hover, :open) { border-color: #b4ccdf; background: #edf4fa; }
+select:disabled { cursor: default; opacity: .6; }
+
+input:not([type="checkbox"]):not([type="file"]), textarea { transition: border-color var(--motion-micro), box-shadow var(--motion-micro), background var(--motion-micro); }
+.field input:not([type="checkbox"]):not([type="file"]):hover:not(:disabled):not(:read-only), .field textarea:hover:not(:disabled):not(:read-only) { border-color: #a9c2d4; }
+.field input:not([type="checkbox"]):not([type="file"]):focus, .field textarea:focus { border-color: #76add0; outline: 2px solid rgb(41 123 178 / .14); outline-offset: 1px; }
+input::placeholder, textarea::placeholder { color: #7c8b95; }
+input:disabled, textarea:disabled { cursor: default; opacity: .65; }
+input[type="checkbox"] {
+  appearance: none; width: 18px; min-width: 18px; height: 18px; padding: 0; margin: 0;
+  flex-shrink: 0; vertical-align: -3px; border: 1px solid #afc3d1; border-radius: 5px;
+  background: #fff; cursor: pointer; transition: background var(--motion-micro), border-color var(--motion-micro), box-shadow var(--motion-micro);
+}
+input[type="checkbox"]:hover:not(:disabled) { background-color: #edf4fa; border-color: #438fbf; }
+input[type="checkbox"]:checked { border-color: #297bb2; background: #297bb2 center/14px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3 8 3 3 7-7' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+input[type="checkbox"]:indeterminate { border-color: #297bb2; background: #297bb2 center/12px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"); }
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+input[type="checkbox"]:disabled { cursor: default; opacity: .5; }
+
+.file-picker { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; min-height: 66px; border: 1px dashed #b4c9d9; border-radius: 10px; background: #f7fafc; transition: border-color var(--motion-micro), background var(--motion-micro); }
+.file-picker:hover:not(:has(input:disabled)), .file-picker:focus-within { background: #edf5fb; border-color: #5c9bc5; }
+.file-picker:focus-within { outline: 2px solid rgb(41 123 178 / .2); outline-offset: 2px; }
+.file-picker > input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; padding: 0; cursor: pointer; z-index: 1; }
+.file-picker-action { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #d4e1e9; border-radius: 7px; background: #fff; color: var(--text-link); font-weight: 600; pointer-events: none; }
+.file-picker-name { flex: 1; min-width: min(160px, 100%); color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; pointer-events: none; }
+.file-picker:has(input:disabled) { opacity: .6; }
+.file-picker > input:disabled { cursor: default; }
+
+.number-input, .type-combobox { position: relative; display: block; min-width: 0; }
+.field .number-input > input, .field .type-combobox > input { width: 100%; }
+.field .number-input > input { padding-right: 76px; appearance: textfield; }
+.number-input input::-webkit-inner-spin-button, .number-input input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.number-input-actions { display: flex; gap: 2px; position: absolute; right: 5px; top: 50%; transform: translateY(-50%); }
+.number-input-actions button, .type-combobox-toggle { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: color var(--motion-micro), background var(--motion-micro); }
+.number-input-actions button:hover:not(:disabled), .type-combobox-toggle:hover:not(:disabled) { color: var(--text-link); background: #e4effa; }
+.number-input-actions button:active:not(:disabled), .type-combobox-toggle:active:not(:disabled) { background: #d5e7f7; }
+.number-input-actions button:focus-visible, .type-combobox-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.number-input-actions button:disabled { opacity: .35; cursor: default; }
+.field .type-combobox > input { padding-right: 40px; }
+.type-combobox-toggle { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); }
+.type-combobox-toggle[aria-expanded="true"] { color: var(--text-link); background: #e4effa; }
+.type-combobox-toggle svg { transition: rotate var(--motion-micro); }
+.type-combobox-toggle[aria-expanded="true"] svg { rotate: 180deg; }
+.type-suggestions { position: fixed; inset: auto; top: calc(anchor(bottom) + 5px); left: anchor(left); min-width: anchor-size(width); margin: 0; position-try-fallbacks: flip-block, flip-inline; }
+.type-suggestions button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; font: inherit; }
+.type-suggestions button:hover, .type-suggestions button.is-active { background: #edf4fa; color: var(--text-link); }
+.type-suggestions button[aria-selected="true"] { background: #e4effa; color: var(--text-link); }
+.type-suggestions small { margin-left: 12px; color: var(--text-secondary); font-size: 12px; }
+.control-menu-empty { margin: 8px 12px; color: var(--text-secondary); font-size: 12px; }
+
+details:not(.editor-more):not(.breadcrumb-ancestors) > summary { list-style: none; cursor: pointer; border-radius: 6px; transition: color var(--motion-micro), background var(--motion-micro); }
+details > summary::-webkit-details-marker { display: none; }
+details:not(.editor-more):not(.breadcrumb-ancestors) > summary::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 9px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); vertical-align: 2px; transition: transform var(--motion-micro); }
+details[open]:not(.editor-more):not(.breadcrumb-ancestors) > summary::before { transform: rotate(45deg); }
+details:not(.editor-more):not(.breadcrumb-ancestors) > summary:hover { color: var(--text-link); background: rgb(228 239 250 / .5); }
+details > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  select, select::picker-icon, select option, input, textarea, .file-picker, .number-input-actions button, .type-combobox-toggle, .type-combobox-toggle svg, details > summary, details > summary::before { transition: none !important; }
+}
+@media (forced-colors: active) {
+  input[type="checkbox"] { appearance: auto; }
+  select option:checked { outline: 1px solid Highlight; }
+}

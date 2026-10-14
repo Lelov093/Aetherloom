@@ -13,6 +13,8 @@ import { Button, Dialog, ErrorNotice } from "../../components/ui";
 import { entityKinds, type Entity } from "../creation/api";
 import { EntityMark } from "../../components/EntityMark";
 import { useWorkspaceTrail } from "../../components/WorkspaceContext";
+import { Portrait, usePortraits } from "../objects/Portrait";
+import { CanonSources } from "./CanonSources";
 import { CandidateEditor } from "./CandidateEditor";
 import {
   reviewApi,
@@ -33,6 +35,7 @@ export function ReviewDetail({
   candidates,
   onReload,
   onDecision,
+  active = true,
 }: {
   world: string;
   preview: Preview;
@@ -40,7 +43,9 @@ export function ReviewDetail({
   candidates: Candidate[];
   onReload: () => Promise<void>;
   onDecision: (d: Decision) => Promise<void>;
+  active?: boolean;
 }) {
+  const { portraits } = usePortraits(world);
   const c = preview.candidate,
     p = c.payload;
   const [editing, setEditing] = useState(false),
@@ -100,14 +105,7 @@ export function ReviewDetail({
             aria-hidden="true"
           />
           <div className="review-detail-identity">
-            <EntityMark
-              kind={
-                p.entity_kind ||
-                subject?.kind ||
-                referencedCandidate?.payload.entity_kind ||
-                "custom"
-              }
-            />
+            {subject?.kind === 'character' && portraits[subject.id] ? <Portrait id={subject.id} name={subject.name} version={portraits[subject.id]}/> : <EntityMark kind={p.entity_kind || subject?.kind || referencedCandidate?.payload.entity_kind || 'custom'}/>}
             <div>
               <span className="eyebrow">
                 {kindNames[c.kind]} · {statusNames[c.status]}
@@ -165,18 +163,8 @@ export function ReviewDetail({
                         {record.valid_until || "结束未知"}
                       </span>
                     )}
-                    <div className="current-evidence">{record.source_note && <small>{record.source_note}</small>}
-                    {record.sources?.map((s) => (
-                      <Link
-                        key={s.id}
-                        className="text-link"
-                        to={`/worlds/${world}/review?candidate=${s.id}`}
-                      >
-                        查看已确认来源 v{s.source_version} →
-                      </Link>
-                    ))}
-                    </div>
-                </div>
+                    <CanonSources record={record} kind={c.kind} world={world}/>
+                  </div>
                 ))
               ) : (
                 <p className="context-hint">尚无对应的已确认设定。</p>
@@ -273,7 +261,7 @@ export function ReviewDetail({
                 <p>请核对这处代词或别名是否指向当前人物。</p>
               </>}
             </div>}
-            <p>{preview.source.context}</p>
+            {preview.source.context.trim() !== preview.source.quote.trim() && <p>{preview.source.context}</p>}
             {preview.source.occurrence_count > 1 && (
               <p className="review-notice">
                 同一引用在此次提取范围内出现 {preview.source.occurrence_count}{" "}
@@ -469,7 +457,7 @@ export function ReviewDetail({
           )}
         </footer>
       )}
-      {editing && (
+      {editing && active && (
         <CandidateEditor
           candidate={c}
           entities={entities}
@@ -478,7 +466,7 @@ export function ReviewDetail({
           onSaved={onReload}
         />
       )}
-      {sourceOpen && (
+      {sourceOpen && active && (
         <Dialog
           title={`正文来源 · v${preview.source.version}（历史只读）`}
           onClose={() => setSourceOpen(false)}
@@ -503,7 +491,7 @@ export function ReviewDetail({
           </Link>
         </Dialog>
       )}
-      {rebinding && (
+      {rebinding && active && (
         <Dialog
           title="重新核对当前来源"
           onClose={() => setRebinding(false)}

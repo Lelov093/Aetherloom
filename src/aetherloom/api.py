@@ -22,6 +22,8 @@ from aetherloom.extraction import ExtractionService
 from aetherloom.simulation_service import SimulationService
 from aetherloom.simulation_api import router as simulation_router
 from aetherloom.portraits import router as portrait_router, initialize as initialize_portraits
+from aetherloom.explore import router as explore_router
+from aetherloom.timeline import router as timeline_router
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -80,6 +82,8 @@ def create_app(db_path: Path | None = None, provider=None):
     app.include_router(library_router)
     app.include_router(simulation_router)
     app.include_router(portrait_router)
+    app.include_router(explore_router)
+    app.include_router(timeline_router)
 
     @app.exception_handler(CreationError)
     async def creation_error(request: Request, error: CreationError):

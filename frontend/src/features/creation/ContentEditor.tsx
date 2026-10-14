@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { EditorState } from "@tiptap/pm/state";
 import { useBlocker, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Bold,
@@ -12,19 +13,31 @@ import {
   Link2,
   PanelRightClose,
   Save,
+  BookOpen,
+  PenLine,
+  Orbit,
+  Underline,
+  Heading2,
+  List,
+  MoreHorizontal,
+  PanelLeftClose,
+  UserRound,
+  MapPin,
+  Clock3,
 } from "lucide-react";
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
 import { EntityMention, ContentLink } from "./DocumentMarks";
 import { DocumentSearch, DocumentFind } from "./DocumentSearch";
-import { ExtractionPanel } from "../review/ExtractionPanel";
 import { EntityContext } from "./EntityContext";
 import { DocumentContext } from "./DocumentContext";
 import { ContentReferences } from "./ContentReferences";
 import { DocumentMaterials } from './MaterialSources';
 import { sourceSelection } from './sourceProjection';
 import { ObjectBrowser } from "../objects/ObjectBrowser";
-import { WritingFont, useWritingFont } from './WritingFont';
-import { materialCategories, materialTags } from './MaterialClassification';
+import { ReadingSettings, useWritingFont, useReadingLayout } from './WritingFont';
+import { materialCategories } from './MaterialClassification';
+import { useReadingPosition } from './useReadingPosition';
+import { PanelResize, useCreatePanel } from './CreatePanel';
 import { type ObjectRef } from "../objects/api";
 import {
   creationApi,
@@ -42,6 +55,10 @@ export function ContentEditor({
   onSaved,
   onFocusChange,
   directory,
+  treeOpen,
+  onToggleTree,
+  onResetTreeWidth,
+  switching = false,
 }: {
   initial: ContentNode;
   entities: Entity[];
@@ -49,6 +66,10 @@ export function ContentEditor({
   onSaved: (node: ContentNode) => void;
   onFocusChange: (focus: boolean) => void;
   directory?: React.ReactNode;
+  treeOpen: boolean;
+  onToggleTree: () => void;
+  onResetTreeWidth: () => void;
+  switching?: boolean;
 }) {
   const navigate = useNavigate();
   const [params,setParams] = useSearchParams();
@@ -56,6 +77,7 @@ export function ContentEditor({
   const readingRef = useRef(reading);
   readingRef.current = reading;
   const writingFont = useWritingFont();
+  const readingLayout = useReadingLayout();
   const current = useRef(initial),
     pending = useRef(initial.document || emptyDocument),
     saved = useRef(JSON.stringify(pending.current));
@@ -72,16 +94,20 @@ export function ContentEditor({
   const [dirty, setDirty] = useState(false),
     [state, setState] = useState("已保存"),
     [error, setError] = useState("");
+  const rightPanel = useCreatePanel('right', 360, 1280);
+  const context = rightPanel.open, setContext = rightPanel.setOpen;
   const [focus, setFocus] = useState(false),
-    [context, setContext] = useState(
-      () => window.matchMedia("(min-width: 1100px)").matches,
-    ),
     [tab, setTab] = useState("inspector");
   const [selection, setSelection] = useState({ from: 0, to: 0, text: "" }),
     [picker, setPicker] = useState<"entity" | "content" | null>(null);
   const [inspected, setInspected] = useState<Entity>(),
     [history, setHistory] = useState<History[] | null>(null),
     [revision, setRevision] = useState<History>();
+  const [inspectionTrail, setInspectionTrail] = useState<Entity[]>([]);
+  function inspectEntity(entity: Entity | undefined) {
+    setInspectionTrail([]);
+    setInspected(entity);
+  }
   const [metadata, setMetadata] = useState(initial.metadata),
     [metadataBusy, setMetadataBusy] = useState(false);
   const editor = useEditor({
@@ -96,8 +122,9 @@ export function ContentEditor({
     editorProps: {
       attributes: {
         class: "writing-document",
-        "aria-label": "正文编辑器",
-        role: "textbox",
+        "aria-label": reading ? "资料阅读内容" : "正文编辑器",
+        role: reading ? "document" : "textbox",
+        "aria-readonly": String(reading),
         "aria-multiline": "true",
       },
       handleClick: (_view, _pos, event) => {
@@ -109,7 +136,7 @@ export function ContentEditor({
           .closest("[data-node-id]")
           ?.getAttribute("data-node-id");
         if (entityId) {
-          setInspected(entities.find((e) => e.id === entityId));
+          inspectEntity(entities.find((e) => e.id === entityId));
           setContext(true);
           setTab("inspector");
           return true;
@@ -133,7 +160,7 @@ export function ContentEditor({
         const target = event.target as HTMLElement;
         const id = target.getAttribute("data-entity-id");
         if (id) {
-          setInspected(entities.find((e) => e.id === id));
+          inspectEntity(entities.find((e) => e.id === id));
           setContext(true);
           return true;
         }
@@ -159,20 +186,29 @@ export function ContentEditor({
       });
     },
   });
-  useEffect(()=>{
-    editor?.setEditable(!reading, false);
-    editor?.setOptions({editorProps:{...editor.options.editorProps,attributes:{class:'writing-document',role:reading?'document':'textbox',
-      'aria-label':reading?'资料阅读内容':'正文编辑器','aria-readonly':String(reading),'aria-multiline':'true'}}});
-    if(reading&&tab==='ai')setTab('inspector');
-  },[editor,reading]);
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1100px)");
-    const update = () => {
-      if (!mq.matches) setContext(false);
-    };
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
+  useLayoutEffect(()=>{
+    editor?.setEditable(!reading && !switching, false);
+  },[editor,reading,switching]);
+  // Swap saved documents before paint, keeping the editor and side panels mounted.
+  useLayoutEffect(() => {
+    if (!editor || current.current.id === initial.id) return;
+    clearTimeout(timer.current);
+    current.current = initial;
+    pending.current = initial.document || emptyDocument;
+    saved.current = JSON.stringify(pending.current);
+    pendingMetadata.current = initial.metadata;
+    savedMetadata.current = JSON.stringify(initial.metadata);
+    editor.commands.setContent(pending.current, { emitUpdate: false });
+    // A reused view must not carry undo history or search state into another document.
+    editor.view.updateState(EditorState.create({ schema: editor.schema, doc: editor.state.doc, plugins: editor.state.plugins }));
+    setMetadata(initial.metadata);
+    setSelection({ from: 0, to: 0, text: '' });
+    inspectEntity(undefined);
+    setHistory(null); setRevision(undefined); setPicker(null);
+    setDirty(false); setError(''); setState('已保存');
+    setTab('inspector');
+  }, [editor, initial.id]);
+  const readingPosition = useReadingPosition(world, initial.id, reading, !!editor);
   const editorRef = useRef(editor);
   editorRef.current = editor;
   useEffect(() => {
@@ -320,167 +356,71 @@ export function ContentEditor({
   const boundName = (key:string) => metadata[`${key}_id`]
     ? entities.find(e=>e.id===metadata[`${key}_id`])?.name || '关联对象已收起或不可用'
     : metadata[key];
+  const formatActions = [
+    { label: '撤销', Icon: Undo2, disabled: !editor?.can().undo(), active: false, run: () => editor?.chain().focus().undo().run() },
+    { label: '重做', Icon: Redo2, disabled: !editor?.can().redo(), active: false, run: () => editor?.chain().focus().redo().run() },
+    { label: '加粗', Icon: Bold, disabled: !editor, active: editor?.isActive('bold'), run: () => editor?.chain().focus().toggleBold().run() },
+    { label: '斜体', Icon: Italic, disabled: !editor, active: editor?.isActive('italic'), run: () => editor?.chain().focus().toggleItalic().run() },
+    { label: '下划线', Icon: Underline, disabled: !editor, active: editor?.isActive('underline'), run: () => editor?.chain().focus().toggleUnderline().run() },
+    { label: '正文标题', Icon: Heading2, disabled: !editor, active: editor?.isActive('heading', {level: 2}), run: () => editor?.chain().focus().toggleHeading({level: 2}).run() },
+    { label: '项目列表', Icon: List, disabled: !editor, active: editor?.isActive('bulletList'), run: () => editor?.chain().focus().toggleBulletList().run() },
+  ];
+  const formatButtons = (labelled = false) => formatActions.map(({label, Icon, disabled, active, run}) =>
+    <Button key={label} variant="ghost" aria-label={label} title={label} disabled={disabled} aria-pressed={active || undefined} onClick={run}>
+      <Icon size={16}/>{labelled && label}
+    </Button>);
   return (
     <div
       className={`editor-layout ${!context || focus ? "without-context" : ""}`}
-      style={{ '--reader-font': writingFont.family } as React.CSSProperties}
+      data-reading={reading}
+      data-focus={focus}
+      aria-busy={switching}
+      inert={switching}
+      style={{ '--reader-font': writingFont.family, '--reader-size': `${readingLayout.layout.size}px`, '--reader-spacing': readingLayout.layout.spacing, '--create-context-width': `${rightPanel.width}px` } as React.CSSProperties}
     >
-      <section className="editor-primary">
+      <section className="editor-primary" ref={readingPosition}>
         <div className="writing-toolbar" role="toolbar" aria-label={reading?'资料阅读显示':'正文格式'}>
-          <Button onClick={async()=>{if(!reading&&!(await persist()))return;navigate(`/worlds/${world}/simulate?setup=new&source=${initial.id}`)}}>从此处准备模拟</Button>
-          <WritingFont {...writingFont} />
-          <Button variant={reading?'secondary':'ghost'} onClick={async()=>{
-            if(!reading&&!(await persist()))return;
-            const next=new URLSearchParams(params);if(reading)next.delete('mode');else next.set('mode','read');
-            setParams(next,{replace:true});
-          }}>{reading?'编辑资料':'阅读资料'}</Button>
-          {!reading && <>
-          <Button
-            variant="ghost"
-            aria-label="加粗"
-            aria-pressed={editor?.isActive("bold")}
-            onClick={() => editor?.chain().focus().toggleBold().run()}
-          >
-            <Bold size={16} />
-          </Button>
-          <Button
-            variant="ghost"
-            aria-label="斜体"
-            aria-pressed={editor?.isActive("italic")}
-            onClick={() => editor?.chain().focus().toggleItalic().run()}
-          >
-            <Italic size={16} />
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() =>
-              editor?.chain().focus().toggleHeading({ level: 2 }).run()
-            }
-          >
-            标题
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => editor?.chain().focus().toggleBulletList().run()}
-          >
-            列表
-          </Button>
-          <Button
-            variant="ghost"
-            aria-label="撤销"
-            disabled={!editor?.can().undo()}
-            onClick={() => editor?.chain().focus().undo().run()}
-          >
-            <Undo2 size={16} />
-          </Button>
-          <Button
-            variant="ghost"
-            aria-label="重做"
-            disabled={!editor?.can().redo()}
-            onClick={() => editor?.chain().focus().redo().run()}
-          >
-            <Redo2 size={16} />
-          </Button>
-          <span className="toolbar-divider" />
-          <Button
-            variant="ghost"
-            disabled={!selection.text}
-            onClick={() => {
-              setPicker("entity");
-            }}
-          >
-            <Link2 size={15} />
-            链接对象
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={!selection.text}
-            onClick={() => {
-              setPicker("content");
-            }}
-          >
-            内部链接
-          </Button>
-          {editor?.isActive("entityMention") && (
-            <Button
-              variant="ghost"
-              onClick={() =>
-                editor.chain().focus().unsetMark("entityMention").run()
-              }
-            >
-              解除对象链接
-            </Button>
-          )}
-          </>}
-        </div>
-        <DocumentFind editor={editor} />
-        <header className="editor-heading">
-          <img
-            className="editor-heading-art"
-            src="/art/harbor-light.webp"
-            alt=""
-            aria-hidden="true"
-          />
-          <div>
-            <span className="eyebrow">
-              {(
-                {
-                  chapter: "章节",
-                  scene: "场景",
-                  section: "小节",
-                  volume: "卷",
-                  note: "笔记",
-                } as Record<string, string>
-              )[initial.kind] || initial.kind}{" "}
-              · WORKING CONTENT
-            </span>
-            <h1>{initial.title}</h1>
-            <p>
-              {[boundName('pov'), boundName('location'), metadata.story_time]
-                .filter(Boolean)
-                .join(" · ") || "视角、地点与故事时间尚未指定"}
-            </p>
-            <p>{materialCategories[metadata.material_category||'unclassified']}{materialTags(metadata).length>0&&` · ${materialTags(metadata).join(' · ')}`}</p>
+          <div className="toolbar-group">
+            <Button variant="ghost" aria-label={treeOpen?'收起作品目录':'打开作品目录'} aria-expanded={treeOpen} aria-controls="create-directory" title="作品目录" disabled={focus} onClick={onToggleTree}><PanelLeftClose size={17}/></Button>
+            <Button variant="ghost" className="reader-switch" aria-label={reading?'编辑资料':'阅读资料'} title={reading?'切换到编辑':'切换到阅读'} onClick={async()=>{
+              if(!reading&&!(await persist()))return;
+              const next=new URLSearchParams(params);if(reading)next.delete('mode');else next.set('mode','read');
+              setParams(next,{replace:true});
+            }}>{reading?<BookOpen size={17}/>:<PenLine size={17}/>}<span>{reading?'阅读':'编辑'}</span></Button>
           </div>
-          <div className="editor-heading-actions">
-            <span
-              role="status"
-              className={`save-state ${dirty ? "pending" : ""}`}
-            >
-              {reading ? `阅读模式 · v${initial.version}` : state}
-            </span>
-            <Button
-              variant="ghost"
-              aria-label="保存正文"
-              onClick={() => void persist()}
-              disabled={reading || !dirty}
-            >
-              <Save size={16} />
-            </Button>
-            <Button
-              variant="ghost"
-              aria-label="查看内容历史"
-              onClick={openHistory}
-            >
-              <HistoryIcon size={17} />
-            </Button>
-            <Button
-              variant="ghost"
-              aria-label={focus ? "退出专注模式" : "专注模式"}
-              onClick={() => {
-                setFocus(!focus);
-                onFocusChange(!focus);
-              }}
-            >
-              <Maximize2 size={17} />
-            </Button>
-            <Button
-              variant="ghost"
-              aria-label={context ? "收起上下文" : "打开上下文"}
-              onClick={() => setContext(!context)}
-            >
-              <PanelRightClose size={17} />
-            </Button>
+          {!reading && <div className="toolbar-group format-tools">
+            {formatButtons()}
+          </div>}
+          <span role="status" className={`save-state ${dirty?'pending':''}`}>{switching ? '正在打开…' : reading?`v${initial.version}`:state}</span>
+          <div className="reader-tools">
+            <ReadingSettings {...writingFont} {...readingLayout}/>
+            <DocumentFind key={initial.id} editor={editor}/>
+            <details className="editor-more">
+              <summary aria-label="更多正文操作" title="更多操作"><MoreHorizontal size={18}/></summary>
+              <div className="editor-more-menu" onClick={event=>{if((event.target as HTMLElement).closest('button'))event.currentTarget.parentElement?.removeAttribute('open');}}>
+                {!reading && <>
+                  <div className="compact-format-tools">{formatButtons(true)}</div>
+                  <Button variant="ghost" disabled={!selection.text} onClick={()=>setPicker('entity')}><Link2 size={15}/>链接对象</Button>
+                  <Button variant="ghost" disabled={!selection.text} onClick={()=>setPicker('content')}>内部链接</Button>
+                  {editor?.isActive('entityMention')&&<Button variant="ghost" onClick={()=>editor.chain().focus().unsetMark('entityMention').run()}>解除对象链接</Button>}
+                  <Button variant="ghost" aria-label="保存正文" disabled={!dirty} onClick={()=>void persist()}><Save size={16}/>保存正文</Button>
+                </>}
+                <Button variant="ghost" aria-label="查看内容历史" onClick={openHistory}><HistoryIcon size={16}/>内容历史</Button>
+                <Button variant="ghost" aria-label={focus?'退出专注模式':'专注模式'} onClick={()=>{setFocus(!focus);onFocusChange(!focus);}}><Maximize2 size={16}/>{focus?'退出专注':'专注模式'}</Button>
+                <Button variant="ghost" onClick={()=>{onResetTreeWidth();rightPanel.setWidth(360);}}>恢复默认栏宽</Button>
+                <Button variant="ghost" aria-label="从此处准备模拟" onClick={async()=>{if(!reading&&!(await persist()))return;navigate(`/worlds/${world}/simulate?setup=new&source=${initial.id}`)}}><Orbit size={16}/>从此处准备模拟</Button>
+              </div>
+            </details>
+            <Button variant="ghost" aria-label={context?'收起上下文':'打开上下文'} aria-expanded={context&&!focus} aria-controls="create-context" disabled={focus} title="上下文" onClick={()=>setContext(!context)}><PanelRightClose size={17}/></Button>
+          </div>
+        </div>
+        <header className="editor-heading">
+          <span className="eyebrow">{materialCategories[metadata.material_category||'unclassified']}</span>
+          <h1>{initial.title}</h1>
+          <div className="reader-metadata">
+            {boundName('pov')&&<span><UserRound size={15}/>POV · {boundName('pov')}</span>}
+            {boundName('location')&&<span><MapPin size={15}/>{boundName('location')}</span>}
+            {metadata.story_time&&<span><Clock3 size={15}/>{metadata.story_time}</span>}
           </div>
         </header>
         {error && (
@@ -501,7 +441,9 @@ export function ContentEditor({
         </footer>
       </section>
       {context && !focus && (
-        <aside className="editor-context" aria-label="正文上下文">
+        <div className={`create-context-frame ${rightPanel.floating?'is-floating':''}`}>
+        {rightPanel.floating&&<button className="create-panel-scrim" aria-label="关闭上下文浮层" onClick={()=>setContext(false)}/>}
+        <aside id="create-context" className="editor-context" role={rightPanel.floating?'dialog':undefined} aria-modal={rightPanel.floating||undefined} aria-label="正文上下文">
           <header className="context-panel-heading">
             <span>上下文面板</span>
             <Button
@@ -517,8 +459,7 @@ export function ContentEditor({
               ["inspector", "资料"],
               ["references", "关联"],
               ["inspirations", "灵感"],
-              ["ai", "AI 辅助"],
-            ].filter(([id])=>!reading||id!=='ai').map(([id, label]) => (
+            ].map(([id, label]) => (
               <button
                 key={id}
                 role="tab"
@@ -535,11 +476,21 @@ export function ContentEditor({
                 world={world}
                 entityId={inspected.id}
                 entities={entities}
-                onBack={() => setInspected(undefined)}
+                backLabel={inspectionTrail.length ? `返回 ${inspectionTrail[inspectionTrail.length - 1].name}` : '文档上下文'}
+                onBack={() => {
+                  const previous = inspectionTrail[inspectionTrail.length - 1];
+                  setInspectionTrail(trail => trail.slice(0, -1));
+                  setInspected(previous);
+                }}
+                onInspect={entity => {
+                  setInspectionTrail(trail => [...trail, inspected]);
+                  setInspected(entity);
+                }}
               />
             ) : (
               <DocumentContext
                 title={initial.title}
+                version={initial.version}
                 metadata={metadata}
                 references={references}
                 entities={entities}
@@ -547,7 +498,7 @@ export function ContentEditor({
                 busy={metadataBusy}
                 onChange={changeMetadata}
                 onSave={() => void saveMetadata()}
-                onInspect={setInspected}
+                onInspect={inspectEntity}
                 readOnly={reading}
               />
             ))}
@@ -560,7 +511,7 @@ export function ContentEditor({
               version={initial.version}
               entities={references}
               onInspect={(entity) => {
-                setInspected(entity);
+                inspectEntity(entity);
                 setTab("inspector");
               }}
             />
@@ -572,15 +523,9 @@ export function ContentEditor({
               <p className="context-hint">模拟灵感的捕捉与关联尚未开放。</p>
             </>
           )}
-          {tab === "ai" && (
-            <ExtractionPanel
-              world={world}
-              nodeId={initial.id}
-              selection={selection.text}
-              prepare={persist}
-            />
-          )}
         </aside>
+        {!rightPanel.floating&&<PanelResize panel={rightPanel} controls="create-context"/>}
+        </div>
       )}
       {picker && (
         <ObjectBrowser

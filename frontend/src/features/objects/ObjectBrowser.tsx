@@ -53,10 +53,10 @@ export function ObjectBrowser({
   useEffect(() => {
     let active = true;
     setLoading(true);
-    setPage(undefined);
     setError("");
     setSelected(undefined);
     if (searchFirst && !q.trim()) {
+      setPage(undefined);
       setLoading(false);
       return;
     }
@@ -185,7 +185,7 @@ export function ObjectBrowser({
               <button
                 type="button"
                 key={object.id}
-                disabled={excludeIds.includes(object.id) || busy}
+                disabled={excludeIds.includes(object.id) || busy || loading || !!error}
                 className={`object-browser-row ${selected?.id === object.id ? "selected" : ""}`}
                 aria-pressed={selected?.id === object.id}
                 onClick={() => setSelected(object)}

@@ -1,0 +1,50 @@
+/* Atmospheric Edition: quiet surfaces, clearer controls, optional local artwork. */
+.button { border-radius: 9px; transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease; }
+.button--primary { background: linear-gradient(120deg, #219ae3, #458ce8); box-shadow: 0 3px 10px rgb(53 137 201 / .14); }
+.button--primary:hover:not(:disabled) { background: linear-gradient(120deg, #178bcc, #387dd8); box-shadow: 0 4px 12px rgb(53 137 201 / .2); }
+.button--ghost:hover:not(:disabled) { background: #eaf1f8; }
+.button:focus-visible, .context-object-link:focus-visible, .context-related-object:focus-visible,
+.tree-title:focus-visible, .quiet-tabs button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.button:active:not(:disabled) { box-shadow: none; }
+.quiet-tabs button { position: relative; transition: color 140ms ease, background 140ms ease; }
+.quiet-tabs button[aria-selected="true"], .quiet-tabs button[aria-pressed="true"] { color: #176aa1; }
+.creation-workspace { background: linear-gradient(130deg, #f4f3ee, #f1f4f7); }
+.creation-workspace .document-tree { background: linear-gradient(170deg, #fdfbf6, #fcfbf9 45%); }
+.creation-workspace .editor-context { background: linear-gradient(150deg, #f8fbff, #fafbfd 50%); }
+.creation-workspace .tree-row { border-radius: 8px; }
+.creation-workspace .tree-row:hover { background: #eef1f5; }
+.creation-workspace .tree-row.selected { background: #e2edfa; box-shadow: inset 3px 0 #479aca; }
+.creation-workspace .writing-toolbar .button:hover:not(:disabled), .creation-workspace .editor-more > summary:hover { background: #eaf1f8; color: #176aa1; }
+.creation-workspace .context-section h3 { color: #314a64; }
+.creation-primary { position: relative; }
+.route-refresh { position: absolute; top: 52px; right: 20px; z-index: 4; margin: 0; padding: 5px 10px; border-radius: 12px; background: #eaf1f8; color: #45657b; font-size: 11px; pointer-events: none; }
+.context-refresh { margin: 6px 0; color: var(--text-secondary); font-size: 12px; }
+.display-image { display: block; overflow: hidden; border-radius: 10px; background: var(--surface-subtle); }
+.display-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.image-unavailable { display: grid; height: 100%; place-items: center; font-size: 12px; color: var(--text-secondary); }
+.tree-cover { margin: 8px 16px 4px; height: 96px; }
+.work-display-heading { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin: 20px 0; }
+.work-cover { width: min(420px, 100%); aspect-ratio: 2.4; }
+.work-entry-cover { width: 88px; height: 60px; flex-shrink: 0; }
+.world-work-entry:has(.work-entry-cover) { display: grid; grid-template-columns: 88px minmax(0, 1fr); column-gap: 16px; }
+.world-work-entry .work-entry-cover { grid-row: span 2; }
+.display-image-preview { margin: 16px 0; }
+.display-image-preview:empty { display: none; }
+.display-image-preview > img, .display-image-preview .display-image { width: 100%; height: 180px; object-fit: contain; border-radius: 10px; background: var(--surface-subtle); }
+.display-image-preview .display-image img { object-fit: contain; }
+.context-scene { height: 124px; margin: 10px 0 4px; }
+.creation-workspace .context-identity .character-portrait { width: 70px; height: 80px; border: 1px solid var(--border-subtle); }
+.context-object-link, .context-related-object { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-link); text-align: left; cursor: pointer; font: inherit; transition: background 140ms ease; }
+.context-object-link:hover, .context-related-object:hover { background: #eaf1f8; }
+.context-object-link:disabled, .context-related-object:disabled { cursor: default; color: var(--text-secondary); }
+.context-object-link .character-portrait { width: 34px; height: 38px; flex-shrink: 0; border-radius: 8px; }
+.context-location-thumb { width: 66px; height: 42px; flex-shrink: 0; border-radius: 7px; }
+.object-scene-thumb { width: 94px; height: 64px; }
+.entity-scene-thumb { width: 160px; height: 104px; flex-shrink: 0; }
+.context-relation > p { margin-left: 8px; }
+.object-card:hover, .world-card:hover { transform: translateY(-1px); }
+@media (prefers-reduced-motion: reduce) {
+  .button, .quiet-tabs button, .context-object-link, .context-related-object { transition: none; }
+  .dialog { animation: none; }
+  .object-card:hover, .world-card:hover { transform: none; }
+}

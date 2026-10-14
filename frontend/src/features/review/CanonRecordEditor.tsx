@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { NumberInput } from '../../components/FormControls';
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
 import { EntityChoice } from "../objects/EntityChoice";
 import { creationApi, request, type Entity } from "../creation/api";
@@ -270,13 +271,13 @@ export function CanonRecordEditor({
             {entitySelect("关系对象", object, setObject, !!pair)}
             <label className="field">
               <span>关系强度（0–1，可留空）</span>
-              <input
-                type="number"
+              <NumberInput
+                aria-label="关系强度（0–1，可留空）"
                 min={0}
                 max={1}
                 step="0.01"
                 value={strength}
-                onChange={(e) => setStrength(e.target.value)}
+                onValueChange={setStrength}
               />
             </label>
           </>

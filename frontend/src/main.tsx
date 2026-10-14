@@ -9,6 +9,15 @@ import './styles/review.css';
 import './styles/objects.css';
 import './styles/content-library.css';
 import './styles/simulation.css';
+import './styles/reading.css';
+import './styles/create-panels.css';
+import './styles/content-experience.css';
+import './styles/form-controls.css';
+import './styles/simulation-experience.css';
+import './styles/review-experience.css';
+import '@xyflow/react/dist/style.css';
+import './styles/explore.css';
+import './styles/timeline.css';
 
 const router=createHashRouter([{path:'*',element:<App/>}]);
 

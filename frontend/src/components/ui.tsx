@@ -9,16 +9,22 @@ export function ErrorNotice({ children }: { children: ReactNode }) {
   return <div className="error-notice" role="alert"><AlertCircle size={18} /><span>{children}</span></div>;
 }
 
-export function Dialog({ title, children, onClose, busy = false }: { title: string; children: ReactNode; onClose: () => void; busy?: boolean }) {
+export function Dialog({ title, children, onClose, busy = false, className = '', focusFirstInput = true }: { title: string; children: ReactNode; onClose: () => void; busy?: boolean; className?: string; focusFirstInput?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     ref.current?.showModal();
-    ref.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus();
+    ref.current?.querySelector<HTMLElement>(focusFirstInput ? 'input, textarea' : '[aria-label="关闭对话框"]')?.focus();
     return () => { ref.current?.close(); previous?.focus(); };
   }, []);
-  return <dialog ref={ref} aria-labelledby={titleId} className="dialog" onCancel={e => { e.preventDefault(); if (!busy) onClose(); }}>
+  return <dialog ref={ref} aria-labelledby={titleId} className={`dialog ${className}`} onCancel={e => { e.preventDefault(); if (!busy) onClose(); }} onKeyDown={event => {
+    if (event.key !== 'Tab') return;
+    const targets = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex="0"]')]
+      .filter(element => element.tabIndex >= 0 && element.getClientRects().length > 0 && (element.tagName === 'SUMMARY' || !element.closest('details:not([open])')) && (element.tagName === 'SELECT' || !element.closest('select')));
+    if (event.shiftKey && document.activeElement === targets[0]) { event.preventDefault(); targets.at(-1)?.focus(); }
+    else if (!event.shiftKey && document.activeElement === targets.at(-1)) { event.preventDefault(); targets[0]?.focus(); }
+  }}>
     <header className="dialog-heading"><h2 id={titleId}>{title}</h2><Button type="button" variant="ghost" aria-label="关闭对话框" onClick={onClose} disabled={busy}><X size={20} /></Button></header>
     {children}
   </dialog>;

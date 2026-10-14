@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState, type FormEvent } from "react";
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
+import { FilePicker, TypeCombobox } from '../../components/FormControls';
 import {
   emptyDocument,
   request,
@@ -233,8 +234,8 @@ export function ImportDialog({
           </p>
           <label className="field">
             <span>选择文件（可多选）</span>
-            <input
-              type="file"
+            <FilePicker
+              aria-label="选择文件（可多选）"
               name="files"
               multiple
               accept=".txt,.md,.markdown,.docx,.pdf"
@@ -351,25 +352,13 @@ export function ImportDialog({
                   <div className="import-work-fields">
                     <label className="field">
                       <span>内容类型</span>
-                      <input
+                      <TypeCombobox
                         value={current.kind}
                         maxLength={40}
-                        list="import-node-kinds"
-                        onChange={(e) => edit({ kind: e.target.value })}
+                        label="内容类型"
+                        suggestions={['volume', 'chapter', 'section', 'act', 'scene', 'page', 'note']}
+                        onValueChange={(value) => edit({ kind: value })}
                       />
-                      <datalist id="import-node-kinds">
-                        {[
-                          "volume",
-                          "chapter",
-                          "section",
-                          "act",
-                          "scene",
-                          "page",
-                          "note",
-                        ].map((k) => (
-                          <option key={k} value={k} />
-                        ))}
-                      </datalist>
                     </label>
                     <label className="field">
                       <span>所在目录</span>

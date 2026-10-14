@@ -20,6 +20,7 @@ export function DocumentContext({
   onSave,
   onInspect,
   readOnly = false,
+  version,
 }: {
   title: string;
   metadata: Record<string, string>;
@@ -31,6 +32,7 @@ export function DocumentContext({
   onSave: () => void;
   onInspect: (entity: Entity) => void;
   readOnly?: boolean;
+  version: number;
 }) {
   const [browsing, setBrowsing] = useState(false);
   return (
@@ -71,6 +73,7 @@ export function DocumentContext({
         })}
       </dl>
       <p className="context-hint">{materialCategories[metadata.material_category || 'unclassified']} · {materialTags(metadata).join(' · ') || '无资料标签'}</p>
+      <p className="context-hint">内容版本 v{version} · 正文与正式事实分别保存</p>
       {metadata.import_batch && (
         <ImportSources world={world} batch={metadata.import_batch} pages={metadata.import_source_pages} files={metadata.import_files}/>
       )}

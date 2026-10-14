@@ -39,6 +39,7 @@ import { CanonRecords } from "../features/review/CanonRecords";
 import { SourceReader } from '../features/creation/SourceReader';
 const SimulationWorkspace=lazy(()=>import('../features/simulation/SimulationWorkspace').then(m=>({default:m.SimulationWorkspace})));
 const SimulationReview=lazy(()=>import('../features/simulation/SimulationReview').then(m=>({default:m.SimulationReview})));
+const ExploreWorkspace=lazy(()=>import('../features/explore/ExploreWorkspace').then(m=>({default:m.ExploreWorkspace})));
 import {
   WorkspaceContext,
   type ContextCrumb,
@@ -63,8 +64,10 @@ function Shell({
   return (
     <div
       className="application"
+      data-create-editor={Boolean(world && location.pathname === `/worlds/${world.id}/create`)}
+      data-simulation-live={Boolean(world && location.pathname === `/worlds/${world.id}/simulate` && new URLSearchParams(location.search).has('session'))}
       data-workspace={
-        location.pathname.includes("/review") ? "review" : location.pathname.includes('/simulate') ? 'simulate' : "create"
+        location.pathname.includes("/review") ? "review" : location.pathname.includes('/explore') ? 'explore' : location.pathname.includes('/simulate') ? 'simulate' : "create"
       }
     >
       <a
@@ -101,15 +104,22 @@ function Shell({
           </Button>
         </div>
         <nav className="breadcrumb" aria-label="当前路径">
-          <span>
+          {world && location.pathname.includes('/create') ? <details className="create-navigation">
+            <summary>创作</summary>
+            <div onClick={event => { if ((event.target as HTMLElement).closest('a')) event.currentTarget.parentElement?.removeAttribute('open'); }}>
+              <Link to={`/worlds/${world.id}/create`}>作品目录</Link>
+              <Link to={`/worlds/${world.id}/create?view=library`}>全部资料</Link>
+              <Link to={`/worlds/${world.id}/create/objects`}>世界对象</Link>
+            </div>
+          </details> : <span>
             {world
               ? location.pathname.includes("/review")
                 ? "审阅"
-                : location.pathname.includes('/simulate') ? '模拟' : location.pathname.includes("/create")
+                : location.pathname.includes('/explore') ? '探索' : location.pathname.includes('/simulate') ? '模拟' : location.pathname.includes("/create")
                   ? "创作"
                   : "世界首页"
               : "世界库"}
-          </span>
+          </span>}
           {world && (
             <>
               <span className="crumb-divider world-crumb-divider">/</span>
@@ -118,17 +128,24 @@ function Shell({
               </Link>
             </>
           )}
+          {trail.length > 2 && <details className="breadcrumb-ancestors">
+            <summary aria-label="查看路径层级" title="查看完整路径">…</summary>
+            <div onClick={event => { if ((event.target as HTMLElement).closest('a')) event.currentTarget.parentElement?.removeAttribute('open'); }}>
+              {trail.slice(1,-1).map((crumb,index)=>crumb.to?<Link key={index} title={crumb.label} to={crumb.to}>{crumb.label}</Link>:<span key={index}>{crumb.label}</span>)}
+            </div>
+          </details>}
           {trail.map((crumb, index) => (
-            <span className="context-crumb" key={`${index}-${crumb.label}`}>
+            <span className={`context-crumb ${index>0&&index<trail.length-1?'ancestor-crumb':''}`} key={`${index}-${crumb.label}`}>
               <span className="crumb-divider">/</span>
               {crumb.to ? (
-                <Link to={crumb.to}>{crumb.label}</Link>
+                <Link title={crumb.label} to={crumb.to}>{crumb.label}</Link>
               ) : (
-                <strong aria-current="page">{crumb.label}</strong>
+                <strong title={crumb.label} aria-current="page">{crumb.label}</strong>
               )}
             </span>
           ))}
         </nav>
+        <div id="workspace-header-slot" className="workspace-header-slot" />
         <div className="topbar-context">
           {world && <ActivityNotice key={world.id} world={world.id} {...reviewActivity} />}
           {world && (
@@ -164,10 +181,11 @@ function Shell({
         <nav aria-label="工作区">
           <Link
             to={world ? `/worlds/${world.id}` : "/"}
-            className={`rail-item ${!location.pathname.includes("/create") && !location.pathname.includes("/review") && !location.pathname.includes('/simulate') ? "active" : ""}`}
+            className={`rail-item ${!location.pathname.includes("/create") && !location.pathname.includes("/review") && !location.pathname.includes('/simulate') && !location.pathname.includes('/explore') ? "active" : ""}`}
             aria-current={
               !location.pathname.includes("/create") &&
               !location.pathname.includes('/simulate') &&
+              !location.pathname.includes('/explore') &&
               !location.pathname.includes("/review")
                 ? "page"
                 : undefined
@@ -194,20 +212,7 @@ function Shell({
             </button>
           )}
           {world&&!world.archived&&<Link to={workspaceDestination(world.id,'simulate')} className={`rail-item ${location.pathname.includes('/simulate')?'active':''}`} aria-current={location.pathname.includes('/simulate')?'page':undefined}><Orbit size={22} strokeWidth={1.5}/><span>模拟</span></Link>}
-          {[
-            { label: "探索", Icon: Compass },
-          ].map(({ label, Icon }) => (
-            <button
-              key={label}
-              className="rail-item"
-              disabled
-              title={`${label}尚未开放`}
-              aria-label={`${label}（尚未开放）`}
-            >
-              <Icon size={22} strokeWidth={1.5} />
-              <span>{label}</span>
-            </button>
-          ))}
+          {world ? <Link to={workspaceDestination(world.id,'explore')} className={`rail-item ${location.pathname.includes('/explore') ? 'active' : ''}`} aria-current={location.pathname.includes('/explore') ? 'page' : undefined}><Compass size={22} strokeWidth={1.5}/><span>探索</span></Link> : <button className="rail-item" disabled><Compass size={22}/><span>探索</span></button>}
           {world ? (
             <Link
               to={workspaceDestination(world.id,'review')}
@@ -262,7 +267,7 @@ function Shell({
 function WorldRoute({
   view = "home",
 }: {
-  view?: "home" | "create" | "objects" | "entity" | "review" | "records" | "source" | 'simulate' | 'sim-review';
+  view?: "home" | "create" | "objects" | "entity" | "review" | "records" | "source" | 'simulate' | 'sim-review' | 'explore';
 }) {
   const { id } = useParams();
   const [world, setWorld] = useState<World>();
@@ -296,7 +301,7 @@ function WorldRoute({
           </Link>
         </main>
       ) : world ? (
-        view === 'simulate' ? <Suspense fallback={<p role="status">正在打开世界模拟…</p>}><SimulationWorkspace key={world.id} world={world.id}/></Suspense> : view === 'sim-review' ? <Suspense fallback={<p role="status">正在打开模拟审阅…</p>}><SimulationReview key={world.id} world={world.id}/></Suspense> : view === "source" ? (
+        view === 'explore' ? <Suspense fallback={<main id="main-content" className="page loading-state" role="status">正在打开世界关系…</main>}><ExploreWorkspace key={world.id} world={world.id}/></Suspense> : view === 'simulate' ? <Suspense fallback={<p role="status">正在打开世界模拟…</p>}><SimulationWorkspace key={world.id} world={world.id}/></Suspense> : view === 'sim-review' ? <Suspense fallback={<p role="status">正在打开模拟审阅…</p>}><SimulationReview key={world.id} world={world.id}/></Suspense> : view === "source" ? (
           <SourceReader world={world.id}/>
         ) : view === "review" ? (
           <ReviewWorkspace key={world.id} world={world.id} />
@@ -338,6 +343,7 @@ export function App() {
       <Route path="/worlds/:id/review" element={<WorldRoute view="review" />} />
       <Route path="/worlds/:id/review/simulation" element={<WorldRoute view="sim-review"/>}/>
       <Route path="/worlds/:id/simulate" element={<WorldRoute view="simulate"/>}/>
+      <Route path="/worlds/:id/explore" element={<WorldRoute view="explore"/>}/>
       <Route
         path="/worlds/:id/create/records"
         element={<WorldRoute view="records" />}

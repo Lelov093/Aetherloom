@@ -1,5 +1,5 @@
 import {request,type Entity} from '../creation/api';
-import type {Proposal,Candidate} from '../review/api';
+import type {Proposal,Candidate,Preview} from '../review/api';
 export interface RecordInput {id:string;version:number;subject_id?:string;object_id?:string;title?:string;predicate?:string;value?:string;label?:string;description?:string;valid_from:string|null;valid_until:string|null;status:string}
 export interface Inputs {revision:number;entities:Entity[];assertions:RecordInput[];events:RecordInput[];relationship_states:RecordInput[]}
 export interface Setup {
@@ -19,12 +19,15 @@ export interface Session {id:string;world_id:string;title:string;status:string;c
  manifest:{entities:Record<string,Entity>;setup:Setup;materials:{node_id:string;version:number;title:string;text:string}[]};
  initial_state:WorldState;state:WorldState;events:SimEvent[];
  stream:{id:string;actor_id:string;draft:string;status:string}[];proposals:{id:string;seq:number;kind:string;status:string}[]}
-export interface SimPreview {candidate:Candidate & {simulation_id:string;seq:number};revision:number;baseline_stale:boolean;source:{simulation_id:string;title:string;seq:number;baseline_revision:number;start:string;event:SimEvent};
- current:Record<string,unknown>[];conflicts:Record<string,unknown>[];dependencies:{ref:string}[];warnings:string[];requires_evidence_confirmation:boolean}
+export interface SimPreview extends Pick<Preview,'current'|'conflicts'|'dependencies'|'warnings'|'requires_evidence_confirmation'|'affected_entities'|'temporal_change'|'field_mapping'> {
+ candidate:Candidate & {simulation_id:string;seq:number};revision:number;baseline_stale:boolean;
+ source:{simulation_id:string;title:string;seq:number;baseline_revision:number;start:string;event:SimEvent;entities:Record<string,Entity>;time_basis:string};
+}
+export type SessionSummary = Pick<Session, 'id' | 'title' | 'status' | 'cursor' | 'error' | 'calls' | 'cost'> & { start_label: string; latest_narration: string | null };
 const post=(body:unknown)=>({method:'POST',body:JSON.stringify(body)});
 export const simApi={
  inputs:(world:string)=>request<Inputs>(`/worlds/${world}/simulation-inputs`),
- list:(world:string)=>request<Session[]>(`/worlds/${world}/simulations`),
+ list:(world:string)=>request<SessionSummary[]>(`/worlds/${world}/simulations`),
  prepare:(world:string,body:Setup)=>request<{errors:string[];warnings:string[];manifest:Session['manifest'];initial_state:Session['state']}>(`/worlds/${world}/simulations/prepare`,post(body)),
  create:(world:string,body:Setup)=>request<Session>(`/worlds/${world}/simulations`,post(body)),
  get:(id:string)=>request<Session>(`/simulations/${id}`),

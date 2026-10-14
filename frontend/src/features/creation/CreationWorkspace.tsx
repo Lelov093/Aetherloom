@@ -11,17 +11,16 @@ import {
   Settings2,
 } from "lucide-react";
 import { Button, Dialog, EmptyState, ErrorNotice } from "../../components/ui";
+import { NumberInput, TypeCombobox } from '../../components/FormControls';
 import { ResourceForm } from "./ResourceForm";
 import { ImportDialog } from "./ImportDialog";
 import { MaterialClassification, materialCategories } from './MaterialClassification';
 import { ContentLibrary } from './ContentLibrary';
 import { WorkContents } from './WorkContents';
+import { PanelResize, useCreatePanel } from './CreatePanel';
 import { useWorkspaceTrail } from "../../components/WorkspaceContext";
-const ContentEditor = lazy(() =>
-  import("./ContentEditor").then((module) => ({
-    default: module.ContentEditor,
-  })),
-);
+const ContentEditor = lazy(() => import('./ContentEditor').then(module => ({ default: module.ContentEditor })));
+import { DisplayImage, DisplayImageEditor, useDisplayImages } from '../objects/DisplayImages';
 import {
   creationApi,
   workKinds,
@@ -37,6 +36,10 @@ export function CreationWorkspace({ world }: { world: string }) {
   const selectedWork = params.get("work"),
     selectedNode = params.get("node");
   const library = params.get('view') === 'library';
+  const { images: covers } = useDisplayImages(world, 'work');
+  const [coverEditing, setCoverEditing] = useState(false);
+  const [nodeLoading, setNodeLoading] = useState(false), [nodeRetry, setNodeRetry] = useState(0);
+  const [openedWork, setOpenedWork] = useState<string>();
   const [works, setWorks] = useState<Work[]>([]),
     [nodes, setNodes] = useState<ContentNode[]>([]),
     [entities, setEntities] = useState<Entity[]>([]),
@@ -49,22 +52,13 @@ export function CreationWorkspace({ world }: { world: string }) {
     [importing, setImporting] = useState(false),
     [manageWork, setManageWork] = useState(false),
     [manageNode, setManageNode] = useState<ContentNode>();
+  const leftPanel = useCreatePanel('left', 280, 1100);
+  const tree = leftPanel.open, setTree = leftPanel.setOpen;
   const [parent, setParent] = useState<string | null>(null),
-    [tree, setTree] = useState(
-      () => window.matchMedia("(min-width: 1100px)").matches,
-    ),
     [focus, setFocus] = useState(false),
     [q, setQ] = useState(""),
     [status, setStatus] = useState<Status>("active");
   const filtering = Boolean(q.trim() || category || tag.trim());
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1100px)");
-    const update = () => {
-      if (!mq.matches) setTree(false);
-    };
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
   const work = works.find((w) => w.id === selectedWork);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [matches, setMatches] = useState<{
@@ -74,6 +68,7 @@ export function CreationWorkspace({ world }: { world: string }) {
     }>(),
     [searchOffset, setSearchOffset] = useState(0),
     [searchError, setSearchError] = useState("");
+  const [searchLoading, setSearchLoading] = useState(false);
   useEffect(() => {
     setQ("");
     setCategory(''); setTag('');
@@ -84,9 +79,9 @@ export function CreationWorkspace({ world }: { world: string }) {
   }, [q, status, category, tag]);
   useEffect(() => {
     let active = true;
-    setMatches(undefined);
     setSearchError("");
-    if (!selectedWork || !filtering) return;
+    if (!selectedWork || !filtering) { setSearchLoading(false); return; }
+    setSearchLoading(true);
     const timer = setTimeout(() => {
       creationApi
         .searchContent(selectedWork, q.trim(), status, searchOffset, category, tag.trim())
@@ -95,7 +90,7 @@ export function CreationWorkspace({ world }: { world: string }) {
         })
         .catch((e) => {
           if (active) setSearchError(e.message);
-        });
+        }).finally(() => { if (active) setSearchLoading(false); });
     }, 200);
     return () => {
       active = false;
@@ -127,50 +122,33 @@ export function CreationWorkspace({ world }: { world: string }) {
   }, [world]);
   useEffect(() => {
     let active = true;
-    setNodes([]);
-    setNodesLoading(Boolean(selectedWork));
-    if (selectedWork)
-      creationApi
-        .nodes(selectedWork)
-        .then((ns) => {
-          if (active) setNodes(ns);
-        })
-        .catch((e) => {
-          if (active) setError(e.message);
-        }).finally(()=>{if(active)setNodesLoading(false);});
-    return () => {
-      active = false;
-    };
-  }, [selectedWork]);
-  useEffect(() => {
-    let active = true;
-    setNode(undefined);
-    setFocus(false);
-    if (selectedNode)
-      creationApi
-        .node(selectedNode)
-        .then((n) => {
-          if (active) {
-            if (n.work_id !== selectedWork) setError("文档不属于当前作品。");
-            else setNode(n);
-          }
-        })
-        .catch((e) => {
-          if (active) setError(e.message);
-        });
-    return () => {
-      active = false;
-    };
-  }, [selectedNode, selectedWork]);
+    setError('');
+    setNodeLoading(Boolean(selectedNode));
+    setNodesLoading(Boolean(selectedWork && selectedWork !== openedWork));
+    if (!selectedWork) { setNode(undefined); setNodes([]); setOpenedWork(undefined); setNodeLoading(false); return; }
+    const directory = selectedWork === openedWork ? Promise.resolve(nodes) : creationApi.nodes(selectedWork);
+    Promise.all([directory, selectedNode ? creationApi.node(selectedNode) : Promise.resolve(undefined)])
+      .then(([nextNodes, nextNode]) => {
+        if (!active) return;
+        if (nextNode && nextNode.work_id !== selectedWork) throw new Error('文档不属于当前作品。');
+        setNodes(nextNodes); setOpenedWork(selectedWork); setNode(nextNode);
+      })
+      .catch(e => { if (active) setError(e.message); })
+      .finally(() => { if (active) { setNodeLoading(false); setNodesLoading(false); } });
+    return () => { active = false; };
+    // Directory mutations already update nodes locally; only navigation reloads content.
+  }, [selectedNode, selectedWork, nodeRetry]);
+  useEffect(() => { if (!selectedNode) setFocus(false); }, [selectedNode]);
   function selectWork(id: string) {
     setParams({ work: id });
     setStatus("active");
   }
   function selectNode(n: ContentNode) {
     setParams({ work: n.work_id, node: n.id, ...(params.get('mode')==='read'?{mode:'read'}:{}) });
+    if (leftPanel.floating) setTree(false);
   }
   function saved(n: ContentNode) {
-    setNode(n);
+    setNode(current => current?.id === n.id ? n : current);
     setNodes((ns) =>
       ns.map((item) => (item.id === n.id ? { ...item, ...n } : item)),
     );
@@ -231,8 +209,8 @@ export function CreationWorkspace({ world }: { world: string }) {
             ) : (
               <span className="tree-expander-space" />
             )}
-            <button className="tree-title" onClick={() => selectNode(n)}>
-              {["volume", "act"].includes(n.kind) ? (
+            <button className="tree-title" title={n.title} aria-current={selectedNode === n.id ? 'page' : undefined} onClick={() => selectNode(n)}>
+              {["volume", "act"].includes(n.kind) || nodes.some(child => child.parent_id === n.id && child.status === 'active') ? (
                 <FolderOpen size={16} />
               ) : (
                 <FileText size={16} />
@@ -255,8 +233,9 @@ export function CreationWorkspace({ world }: { world: string }) {
     <main
       id="main-content"
       className={`creation-workspace ${!tree || focus || library ? "tree-hidden" : ""}`}
+      style={{ '--create-tree-width': `${leftPanel.width}px` } as React.CSSProperties}
     >
-      <div className="creation-subnav">
+      {(!selectedWork || !selectedNode || library) && <div className="creation-subnav">
         <Link to={`/worlds/${world}/create`} className={library?'':'active'}>
           作品
         </Link>
@@ -271,17 +250,20 @@ export function CreationWorkspace({ world }: { world: string }) {
         >
           <PanelLeftClose size={17} />
         </Button>
-      </div>
+      </div>}
       {tree && !focus && !library && (
-        <aside className="document-tree" aria-label="作品目录">
+        <div className={`create-tree-frame ${leftPanel.floating ? 'is-floating' : ''}`}>
+        {leftPanel.floating && <button className="create-panel-scrim" aria-label="关闭作品目录浮层" onClick={() => setTree(false)}/>}
+        <aside id="create-directory" className="document-tree" role={leftPanel.floating?'dialog':undefined} aria-modal={leftPanel.floating||undefined} aria-label="作品目录">
           <header className="tree-panel-heading">
             <BookOpen size={19} />
             <span>作品结构</span>
+            <Button variant="ghost" aria-label="收起作品目录" title="收起作品目录" onClick={() => setTree(false)}><PanelLeftClose size={17}/></Button>
           </header>
           <div className="tree-work-picker">
-            <label htmlFor="work-picker">当前作品</label>
             <select
               id="work-picker"
+              aria-label="当前作品"
               value={selectedWork || ""}
               onChange={(e) => selectWork(e.target.value)}
             >
@@ -325,13 +307,7 @@ export function CreationWorkspace({ world }: { world: string }) {
           </div>
           {work && (
             <>
-              <figure className="work-atmosphere">
-                <img src="/art/harbor-light.webp" alt="" aria-hidden="true" />
-                <figcaption>
-                  <strong>{work.title}</strong>
-                  <span>{workKinds[work.kind] || work.kind}</span>
-                </figcaption>
-              </figure>
+              <DisplayImage owner="work" id={work.id} name={work.title} version={covers[work.id]} className="tree-cover"/>
               <div className="tree-filter">
                 <input
                   aria-label="在作品中搜索"
@@ -340,6 +316,8 @@ export function CreationWorkspace({ world }: { world: string }) {
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                 />
+                <details className="tree-refinements" open={status !== 'active' || !!category || !!tag}>
+                  <summary>筛选与状态{(status !== 'active' || category || tag) && ' · 已筛选'}</summary>
                 <select
                   aria-label="文档状态"
                   value={status}
@@ -353,8 +331,9 @@ export function CreationWorkspace({ world }: { world: string }) {
                   <option value="">全部分类</option>{Object.entries(materialCategories).map(([id,label])=><option key={id} value={id}>{label}</option>)}
                 </select>
                 <input aria-label="筛选资料标签" placeholder="按标签筛选…" maxLength={80} value={tag} onChange={e=>setTag(e.target.value)}/>
+                </details>
               </div>
-              <nav aria-label="文档树">
+              <nav aria-label="文档树" aria-busy={nodesLoading} inert={nodesLoading}>
                 {filtering ? (
                   <>
                     {searchError ? (
@@ -364,7 +343,7 @@ export function CreationWorkspace({ world }: { world: string }) {
                     ) : (
                       <>
                         <p className="context-hint">
-                          {matches.total} 篇匹配内容
+                          {searchLoading ? '正在更新搜索…' : `${matches.total} 篇匹配内容`}
                         </p>
                         {matches.items.map((n) => (
                           <div
@@ -373,6 +352,7 @@ export function CreationWorkspace({ world }: { world: string }) {
                           >
                             <button
                               className="tree-title"
+                              disabled={searchLoading}
                               onClick={() => selectNode(n)}
                             >
                               <span>
@@ -386,7 +366,7 @@ export function CreationWorkspace({ world }: { world: string }) {
                           <div className="preview-order">
                             <Button
                               variant="ghost"
-                              disabled={!searchOffset}
+                              disabled={searchLoading || !searchOffset}
                               onClick={() =>
                                 setSearchOffset(
                                   Math.max(0, searchOffset - matches.limit),
@@ -398,7 +378,7 @@ export function CreationWorkspace({ world }: { world: string }) {
                             <Button
                               variant="ghost"
                               disabled={
-                                searchOffset + matches.limit >= matches.total
+                                searchLoading || searchOffset + matches.limit >= matches.total
                               }
                               onClick={() =>
                                 setSearchOffset(searchOffset + matches.limit)
@@ -450,38 +430,43 @@ export function CreationWorkspace({ world }: { world: string }) {
             </>
           )}
         </aside>
+        {!leftPanel.floating && <PanelResize panel={leftPanel} controls="create-directory"/>}
+        </div>
       )}
       <div className="creation-primary">
+        {nodeLoading && <p className="route-refresh" role="status">正在打开所选内容…</p>}
         {error && (
           <div className="workspace-error">
             <ErrorNotice>{error}</ErrorNotice>
             <Button
               onClick={() => {
                 setError("");
+                setNodeRetry(value => value + 1);
                 void loadWorks().catch((e) => setError(e.message));
               }}
             >
-              重新读取作品
+              重试打开内容
             </Button>
+            {node && node.id !== selectedNode && <Button onClick={() => selectNode(node)}>返回仍在显示的资料</Button>}
           </div>
         )}
         {loading ? (
           <p className="creation-loading">正在打开作品…</p>
-        ) : library ? <ContentLibrary world={world} works={works}/> : work &&
+        ) : library ? <ContentLibrary world={world} works={works}/> : selectedNode && !node ? <div className="creation-empty content-entry-page" aria-busy={!error}><p role="status">{error ? '所选资料未能打开，请重试。' : '正在准备阅读内容…'}</p></div> : works.find(w => w.id === node?.work_id)?.status === 'active' &&
           node &&
-          work.status === "active" &&
           node.status === "active" &&
           effective(node) ? (
-          <Suspense
-            fallback={<p className="creation-loading">正在准备编辑器…</p>}
-          >
+          <Suspense fallback={<p className="creation-loading">正在准备编辑器…</p>}>
             <ContentEditor
-              key={node.id}
               initial={node}
               entities={entities}
               world={world}
               onSaved={saved}
               onFocusChange={setFocus}
+              treeOpen={tree && !focus}
+              onToggleTree={() => setTree(!tree)}
+              onResetTreeWidth={() => leftPanel.setWidth(280)}
+              switching={node.id !== selectedNode || node.work_id !== selectedWork}
               directory={['volume','act'].includes(node.kind)||nodes.some(n=>n.parent_id===node.id&&n.status==='active') ? <WorkContents world={world} nodes={nodes} parent={node.id}/> : undefined}
             />
           </Suspense>
@@ -506,6 +491,8 @@ export function CreationWorkspace({ world }: { world: string }) {
           <div className="creation-empty content-entry-page">
             <span className="eyebrow">A STORY, TAKING SHAPE</span>
             <h1>{work ? work.title : works.some(w=>w.status==='active') ? '你的作品与创作资料' : "给故事一个开始"}</h1>
+            {work && <div className="work-display-heading"><DisplayImage owner="work" id={work.id} name={work.title} version={covers[work.id]} className="work-cover"/>
+              <Button variant="ghost" disabled={work.status !== 'active'} onClick={() => setCoverEditing(true)}>{covers[work.id] ? '更换作品封面' : '设置作品封面'}</Button></div>}
             <p>
               {work
                 ? "从左侧打开一篇内容，或添加新的章节、场景和笔记。"
@@ -546,16 +533,17 @@ export function CreationWorkspace({ world }: { world: string }) {
                 整理世界对象 <ChevronRight size={14} />
               </Link>
             </div>
-            <EmptyState
+            {!work && !works.some(w=>w.status==='active') && <EmptyState
               icon={<BookOpen size={24} />}
               title="正文保存与正式设定各有位置"
             >
               你可以自由修改作品；世界事实始终由你明确确认。
-            </EmptyState>
-            {work&&work.status==='active'?<WorkContents world={world} nodes={nodes} loading={nodesLoading}/>:!work&&works.filter(w=>w.status==='active').length>0&&<section className="work-contents" aria-label="世界作品列表"><h2>已有作品</h2>{works.filter(w=>w.status==='active').map(w=><Link className="material-library-row" key={w.id} to={`/worlds/${world}/create?work=${w.id}`}><div><strong>{w.title}</strong><small>{workKinds[w.kind]}</small></div><span>打开作品 →</span></Link>)}</section>}
+            </EmptyState>}
+            {work&&work.status==='active'?<WorkContents world={world} nodes={nodes} loading={nodesLoading}/>:!work&&works.filter(w=>w.status==='active').length>0&&<section className="work-contents" aria-label="世界作品列表"><h2>已有作品</h2>{works.filter(w=>w.status==='active').map(w=><Link className="material-library-row" key={w.id} to={`/worlds/${world}/create?work=${w.id}`}><DisplayImage owner="work" id={w.id} name={w.title} version={covers[w.id]} className="work-entry-cover"/><div><strong>{w.title}</strong><small>{workKinds[w.kind]}</small></div><span>打开作品 →</span></Link>)}</section>}
           </div>
         )}
       </div>
+      {coverEditing && work && <DisplayImageEditor owner="work" id={work.id} name={work.title} world={world} onClose={() => setCoverEditing(false)}/>}
       {creatingWork && (
         <ResourceForm
           title="创建作品"
@@ -601,6 +589,7 @@ export function CreationWorkspace({ world }: { world: string }) {
       {manageWork && work && (
         <ManageWork
           work={work}
+          onCover={() => setCoverEditing(true)}
           onClose={() => setManageWork(false)}
           onSave={async (data) => {
             await creationApi.updateWork(work, data);
@@ -670,22 +659,14 @@ function NodeCreateForm({
       </label>
       <label className="field">
         <span>目录结构类型（可自定义）</span>
-        <input
+        <TypeCombobox
           value={kind}
           required
-          list="node-kinds"
           maxLength={40}
-          onChange={(e) => setKind(e.target.value)}
+          label="目录结构类型（可自定义）"
+          suggestions={['volume', 'chapter', 'section', 'act', 'scene', 'quest', 'note']}
+          onValueChange={setKind}
         />
-        <datalist id="node-kinds">
-          <option value="volume" />
-          <option value="chapter" />
-          <option value="section" />
-          <option value="act" />
-          <option value="scene" />
-          <option value="quest" />
-          <option value="note" />
-        </datalist>
       </label>
       <label className="field">
         <span>放入目录</span>
@@ -712,10 +693,12 @@ function NodeCreateForm({
 }
 function ManageWork({
   work,
+  onCover,
   onClose,
   onSave,
 }: {
   work: Work;
+  onCover: () => void;
   onClose: () => void;
   onSave: (data: Partial<Work>) => Promise<void>;
 }) {
@@ -726,6 +709,7 @@ function ManageWork({
     [busy, setBusy] = useState(false);
   return (
     <Dialog title="管理作品" onClose={onClose} busy={busy}>
+      <Button disabled={work.status !== 'active' || busy} onClick={onCover}>设置作品封面</Button>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -835,12 +819,12 @@ function ManageNode({
         </label>
         <label className="field">
           <span>排列顺序（从 0 开始）</span>
-          <input
-            type="number"
+          <NumberInput
+            aria-label="排列顺序（从 0 开始）"
             min={0}
             disabled={node.status !== "active"}
             value={position}
-            onChange={(e) => setPosition(Number(e.target.value))}
+            onValueChange={(value) => setPosition(Number(value))}
           />
         </label>
         <StatusField status={status} onChange={setStatus} />

@@ -4,6 +4,7 @@ import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Button } from "../../components/ui";
+import { Search } from 'lucide-react';
 
 interface SearchState {
   query: string;
@@ -116,13 +117,15 @@ export function DocumentFind({ editor }: { editor: Editor | null }) {
     );
   }
   return (
-    <div className="document-find">
+    <div className={`document-find ${open ? 'is-open' : ''}`}>
       <Button
         variant="ghost"
         aria-expanded={open}
+        aria-label="查找正文"
+        title="查找正文 · Ctrl+F"
         onClick={() => setOpen(!open)}
       >
-        查找正文
+        <Search size={16}/>
       </Button>
       {open && (
         <>

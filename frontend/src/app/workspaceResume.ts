@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
 
-type Workspace = "create" | "review" | 'simulate';
+type Workspace = "create" | "review" | 'simulate' | 'explore';
 const key = (world: string, workspace: Workspace) =>
   `aetherloom:resume:${world}:${workspace}`;
 export function workspaceDestination(
@@ -27,7 +27,7 @@ export function useWorkspaceResume(world?: string) {
   const location = useLocation();
   useEffect(() => {
     if (!world) return;
-    for (const workspace of ["create", "review", 'simulate'] as const) {
+    for (const workspace of ["create", "review", 'simulate', 'explore'] as const) {
       const base = `/worlds/${world}/${workspace}`;
       if (
         location.pathname === base ||
