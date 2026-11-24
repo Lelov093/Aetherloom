@@ -48,7 +48,7 @@ export function WorldHome({ world, onUpdated }: { world: World; onUpdated: (worl
         <div className="world-content-columns"><section><h3>作品</h3>{summary.works.map(w=><Link key={w.id} className="world-work-entry" to={`/worlds/${world.id}/create?work=${w.id}`}><DisplayImage owner="work" id={w.id} name={w.title} version={covers[w.id]} className="work-entry-cover"/><strong>{w.title}</strong><small>{workKinds[w.kind]} · {w.content_count} 个目录与资料条目</small></Link>)}{!summary.works.length&&<p className="context-hint">还没有作品。进入创作即可导入已有资料，或手工建立内容。</p>}</section>
           <section><h3>最近修改的资料</h3>{summary.recent.map(item=><MaterialRow key={item.id} world={world.id} item={item}/>)}{!summary.recent.length&&<p className="context-hint">已有设定、大纲和正文都可以成为起点。</p>}</section></div>
       </>}
-      <div className="availability-note"><BookOpen size={17}/><span>模拟从你确认的起点运行；演化结果经你审阅后，才能进入正式设定。</span><Link className="text-link" to={workspaceDestination(world.id,'simulate')}>准备或查看世界模拟 →</Link></div>
+      <div className="availability-note"><BookOpen size={17}/><span>模拟从你确认的起点运行；演化结果经你审阅后，才能进入正式设定。</span><Link className="text-link" to={workspaceDestination(world.id,'simulate')}>准备或查看世界模拟 →</Link><Link className="text-link" to={`/worlds/${world.id}/inspirations`}>查看灵感与观察 →</Link></div>
     </section>}
     <div className="world-management"><span>世界管理</span>{!world.archived && <Button variant="ghost" onClick={() => { setError(''); setArchiving(true); }}><Archive size={16} />归档世界</Button>}<Link className="text-link" to="/">返回世界库</Link></div>
     {inspecting && <Inspector onClose={() => setInspecting(false)}>{details}</Inspector>}

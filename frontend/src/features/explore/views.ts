@@ -7,21 +7,38 @@ export interface SavedView {
   id: string; name: string; focus: string; hops: number; expanded: string[];
   families: Family[]; kinds: string[]; limit: number; labels: boolean;
   positions: Record<string, XYPosition>; viewport?: Viewport;
-  mode?: 'relationship' | 'timeline'; range?: YearRange; uncertain?: boolean; layers?: TimeLayer[];
+  mode?: 'relationship' | 'timeline' | 'map'; range?: YearRange; uncertain?: boolean; layers?: TimeLayer[];
+  timelineRelationship?: string;
+  mapEvent?: { id: string; label: string };
+  showMapConnections?: boolean;
   timelineViewport?: TimeViewport; timelineScroll?: number; cursor?: number;
   timeOffsets?: { placed: number; unplaced: number };
 }
 const storageKey = (world: string) => `aetherloom:explore-views:${world}`;
-export function readViews(world: string): SavedView[] {
+
+declare global {
+  interface Window {
+    aetherloomExplore?: { savedViews(world: string, value?: SavedView[]): Promise<unknown> };
+  }
+}
+
+export async function readViews(world: string): Promise<SavedView[]> {
+  let values = await window.aetherloomExplore?.savedViews(world);
+  if (values == null) {
+    try { values = JSON.parse(localStorage.getItem(storageKey(world)) || '[]'); }
+    catch { values = []; }
+  }
   try {
-    const values: unknown = JSON.parse(localStorage.getItem(storageKey(world)) || '[]');
     if (!Array.isArray(values)) return [];
     return values.filter(v => v && typeof v.id === 'string' && typeof v.name === 'string' && typeof v.focus === 'string')
       .slice(0, 20).map(v => ({ ...v, hops: v.hops === 2 ? 2 : 1, expanded: Array.isArray(v.expanded) ? v.expanded.filter((k: unknown) => typeof k === 'string').slice(0, 20) : [],
         families: Array.isArray(v.families) ? v.families.filter((f: Family) => families.includes(f)) : families,
         kinds: Array.isArray(v.kinds) ? v.kinds.filter((k: unknown) => typeof k === 'string') : [],
         limit: Math.max(5, Math.min(120, Number(v.limit) || 60)), labels: v.labels !== false,
-        mode: v.mode === 'timeline' ? 'timeline' : 'relationship',
+        mode: v.mode === 'timeline' ? 'timeline' : v.mode === 'map' ? 'map' : 'relationship',
+        timelineRelationship: v.mode === 'timeline' && typeof v.timelineRelationship === 'string' ? v.timelineRelationship : undefined,
+        mapEvent: v.mapEvent && typeof v.mapEvent.id === 'string' && typeof v.mapEvent.label === 'string' ? { id: v.mapEvent.id, label: v.mapEvent.label } : undefined,
+        showMapConnections: v.mode === 'map' && typeof v.showMapConnections === 'boolean' ? v.showMapConnections : undefined,
         range: Object.fromEntries(Object.entries(v.range || {}).filter(([key, value]) => ['start', 'end'].includes(key) && Number.isInteger(value) && Math.abs(value as number) <= 999999)),
         uncertain: v.uncertain !== false, layers: Array.isArray(v.layers) ? v.layers.filter((layer: TimeLayer) => timeLayers.includes(layer)) : timeLayers,
         timelineViewport: validTimeViewport(v.timelineViewport) ? v.timelineViewport : undefined,
@@ -32,6 +49,7 @@ export function readViews(world: string): SavedView[] {
         })), viewport: v.viewport && [v.viewport.x, v.viewport.y, v.viewport.zoom].every(Number.isFinite) ? v.viewport : undefined }));
   } catch { return []; }
 }
-export function writeViews(world: string, views: SavedView[]) {
-  localStorage.setItem(storageKey(world), JSON.stringify(views));
+export async function writeViews(world: string, views: SavedView[]) {
+  if (window.aetherloomExplore) await window.aetherloomExplore.savedViews(world, views);
+  else localStorage.setItem(storageKey(world), JSON.stringify(views));
 }

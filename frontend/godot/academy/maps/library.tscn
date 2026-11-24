@@ -1,0 +1,61 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://prop.tscn" id="1"]
+
+[node name="Contents" type="Node2D"]
+y_sort_enabled = true
+
+[node name="Shelf1" parent="." instance=ExtResource("1")]
+kind = "shelf"
+room_position = Vector2(1.8, 0.65)
+footprint = Vector2(2.7, 0.8)
+
+[node name="Shelf2" parent="." instance=ExtResource("1")]
+kind = "shelf"
+room_position = Vector2(5.2, 0.65)
+footprint = Vector2(2.7, 0.8)
+
+[node name="Shelf3" parent="." instance=ExtResource("1")]
+kind = "shelf"
+room_position = Vector2(8.6, 0.65)
+footprint = Vector2(2.7, 0.8)
+
+[node name="Shelf4" parent="." instance=ExtResource("1")]
+kind = "shelf"
+room_position = Vector2(12, 0.65)
+footprint = Vector2(2.7, 0.8)
+
+[node name="Table5" parent="." instance=ExtResource("1")]
+kind = "table"
+room_position = Vector2(3.5, 4.7)
+footprint = Vector2(2.8, 1.5)
+
+[node name="Table6" parent="." instance=ExtResource("1")]
+kind = "table"
+room_position = Vector2(3.5, 8.7)
+footprint = Vector2(2.8, 1.5)
+
+[node name="Table7" parent="." instance=ExtResource("1")]
+kind = "table"
+room_position = Vector2(10, 4.7)
+footprint = Vector2(2.8, 1.5)
+
+[node name="Table8" parent="." instance=ExtResource("1")]
+kind = "table"
+room_position = Vector2(10, 8.7)
+footprint = Vector2(2.8, 1.5)
+
+[node name="Counter9" parent="." instance=ExtResource("1")]
+kind = "counter"
+room_position = Vector2(12.2, 2.6)
+footprint = Vector2(2, 1)
+
+[node name="Plant10" parent="." instance=ExtResource("1")]
+kind = "plant"
+room_position = Vector2(0.8, 1.9)
+footprint = Vector2(0.8, 0.8)
+
+[node name="Plant11" parent="." instance=ExtResource("1")]
+kind = "plant"
+room_position = Vector2(0.8, 11)
+footprint = Vector2(0.8, 0.8)

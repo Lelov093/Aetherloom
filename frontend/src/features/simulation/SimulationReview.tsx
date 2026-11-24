@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeftRight, CheckCheck, Clock3, FileText, GitBranch, PenLine, RotateCcw, Search, SlidersHorizontal, UsersRound } from 'lucide-react';
 import { Button, Dialog, EmptyState, ErrorNotice } from '../../components/ui';
 import { EntityMark } from '../../components/EntityMark';
@@ -17,6 +17,8 @@ import { StateChanges } from './StateChanges';
 
 export function SimulationReview({ world }: { world: string }) {
   const [params, setParams] = useSearchParams(), id = params.get('proposal');
+  const fromExplore = useLocation().state?.exploreWorld === world;
+  const navigate = useNavigate();
   const { portraits } = usePortraits(world);
   const [list, setList] = useState<SimPreview[]>([]), [entities, setEntities] = useState<Entity[]>([]);
   const [listLoading, setListLoading] = useState(true), [error, setError] = useState(''), [message, setMessage] = useState('');
@@ -24,7 +26,7 @@ export function SimulationReview({ world }: { world: string }) {
   const [editing, setEditing] = useState(false), [busy, setBusy] = useState(false), [ack, setAck] = useState(false), [resolution, setResolution] = useState(''), [confirmation, setConfirmation] = useState(false);
   const selected = useRef({ world, id }), listSequence = useRef(0);
   selected.current = { world, id };
-  const comparison = useReviewPreview(world, id, simApi.preview), preview = comparison.value, candidate = preview?.candidate;
+  const comparison = useReviewPreview(world, id, selectedId => simApi.preview(selectedId, world)), preview = comparison.value, candidate = preview?.candidate;
   useWorkspaceTrail([{ label: '模拟提案', to: `/worlds/${world}/review/simulation` }, ...(candidate ? [{ label: proposalTitle(candidate.payload) }] : [])]);
   async function loadList() {
     const sequence = ++listSequence.current, target = world;
@@ -44,7 +46,7 @@ export function SimulationReview({ world }: { world: string }) {
     const target = { world, id };
     setBusy(true); setError('');
     try {
-      await simApi.decide(preview, action, effectiveResolution || null, ack);
+      await simApi.decide(preview, action, effectiveResolution || null, ack, world);
       if (target.id === selected.current.id && target.world === selected.current.world) { await reload(); setMessage(action === 'accept' ? '已显式接受，正式记录与模拟来源已保存。' : '已拒绝提案，未修改 Canon。'); }
     } catch (failure) { if (target.id === selected.current.id) { setError((failure as Error).message); setConfirmation(false); setAck(false); } }
     finally { setBusy(false); }
@@ -81,6 +83,7 @@ export function SimulationReview({ world }: { world: string }) {
   </aside>;
   return <>
     <ReviewFrame inbox={inbox} selection={id} simulation><section className="review-primary" aria-label="模拟审阅详情" aria-busy={comparison.loading}>
+      {fromExplore && <div className="canon-row-actions"><Button variant="ghost" onClick={() => navigate(-1)}>返回探索</Button></div>}
       {error && <ErrorNotice>{error}</ErrorNotice>}{message && <p className="review-success" role="status">{message}</p>}
       {(comparison.loading || comparison.error || (id && !comparison.current)) && <div className="review-load-status" role="status">{comparison.error || '正在比较提案与当前 Canon…'}{comparison.error && <Button variant="ghost" onClick={() => void comparison.reload()}>重试比较</Button>}</div>}
       {preview && candidate && payload ? <div className="review-detail-holder" inert={!comparison.current || comparison.loading || busy}><article className="review-detail">
@@ -95,7 +98,25 @@ export function SimulationReview({ world }: { world: string }) {
             {preview.field_mapping && <p className={preview.field_mapping.error ? 'review-warning' : 'review-mapping'}>字段映射：{preview.field_mapping.label} · {fieldTypeNames[preview.field_mapping.value_type || '']} → {preview.field_mapping.value}{preview.field_mapping.error && `；${preview.field_mapping.error}`}</p>}
             <small>{preview.source.title} · 第{preview.source.seq}步</small>
           </section></div>
-          <div className="review-context-grid"><section className="review-context-card"><h2><GitBranch size={17}/>模拟来源与依据</h2><div className="source-heading"><strong>{preview.source.title}</strong><Link className="text-link" to={`/worlds/${world}/simulate?session=${preview.source.simulation_id}&event=${preview.source.seq}`}>查看第{preview.source.seq}步 →</Link></div><p className="review-source-label">已提交的原始模拟事件</p><blockquote>{preview.source.event.narration}</blockquote><details><summary>本步提交的前后状态</summary><StateChanges diff={preview.source.event.diff} name={frozenName}/></details><small>模拟状态变化不直接改变 Canon；编辑提案不改写原始事件。</small></section>
+          <div className="review-context-grid">
+            <section className="review-context-card">
+              <h2><GitBranch size={17}/>模拟来源与依据</h2>
+              <div className="source-heading">
+                <strong>{preview.source.title}</strong>
+                <Link className="text-link"
+                  to={preview.source.type === "runtime_v2" ? `/worlds/${world}/simulate?line=${preview.source.simulation_id}&seq=${preview.source.seq}` : `/worlds/${world}/simulate?session=${preview.source.simulation_id}&event=${preview.source.seq}`}
+                  state={preview.source.type === "runtime_v2" ? { simulationReviewWorld: world } : undefined}>
+                  查看第{preview.source.seq}步 →
+                </Link>
+              </div>
+              <p className="review-source-label">已提交的原始模拟事件{preview.source.purpose && ` · ${preview.source.purpose === "original_projection" ? "原作推演" : preview.source.purpose === "template_parallel" ? "模板平行世界" : preview.source.purpose === "sandbox" ? "自由沙盒" : "未分类"}`}</p>
+              {preview.source.lineage?.ancestors.map(a => <p key={a.worldline_id}>
+                <Link className="text-link" to={`/worlds/${world}/simulate?line=${a.worldline_id}&seq=${a.seq}`} state={{ simulationReviewWorld: world }}>父系来源 · 第{a.seq}步 →</Link>
+              </p>)}
+              <blockquote>{preview.source.event.narration}</blockquote>
+              <details><summary>本步提交的前后状态</summary><StateChanges diff={preview.source.event.diff} name={frozenName}/></details>
+              <small>模拟状态变化不直接改变 Canon；编辑提案不改写原始事件。</small>
+            </section>
             <div className="review-context-stack"><section className="review-context-card"><h2><Clock3 size={17}/>时间与冻结基线</h2><p>{preview.source.start}</p><p>{preview.source.time_basis}</p><div className="review-baseline"><span>冻结基线 Canon {preview.source.baseline_revision}</span><span>当前 Canon {preview.revision}</span></div>{(payload.valid_from || payload.valid_until) ? <p>提案有效时间：{payload.valid_from || '起始未知'} → {payload.valid_until || '结束未知'}</p> : <small>未指定正式记录的有效时间；行动步数不是故事日期。</small>}{preview.baseline_stale && <p className="review-notice">Canon 已在冻结后更新。请核对当前比较；版本变化不等于本提案有冲突。</p>}{preview.temporal_change && <p className="temporal-notice">当前记录与提案有明确不重叠的年份区间，可按时间变化保留。</p>}</section>
               {!!preview.affected_entities.length && <section className="review-context-card"><h2><UsersRound size={17}/>影响对象</h2><div className="affected-objects">{preview.affected_entities.map(entity => <Link key={entity.id} to={`/worlds/${world}/create/objects/${entity.id}`}><EntityMark kind={entity.kind} small/><span>{entity.name}</span></Link>)}</div></section>}
             </div></div>
@@ -110,7 +131,7 @@ export function SimulationReview({ world }: { world: string }) {
         <footer className="review-decision-bar">{candidate.status === 'pending' ? <><Button variant="ghost" disabled={!comparison.current || comparison.loading || busy} onClick={() => setEditing(true)}><PenLine size={15}/>编辑提案</Button><Button disabled={busy} onClick={() => void decide('reject')}>拒绝提案</Button><Button variant="ghost" disabled={busy} onClick={() => void reload()}><RotateCcw size={15}/>重新比较</Button><Button variant="primary" disabled={!canAccept} onClick={() => setConfirmation(true)}><CheckCheck size={16}/>预览接受</Button></> : <><p>已{candidate.status === 'accepted' ? '接受' : '拒绝'} · 原始来源保留</p>{candidate.target_id && <Link className="text-link" to={candidate.target_type === 'assertion' ? `/worlds/${world}/create/objects/${payload.subject_ref}?tab=facts&fact=${candidate.target_id}` : `/worlds/${world}/create/records?event=${candidate.target_id}`}>查看正式记录与来源 →</Link>}</>}</footer>
       </article></div> : <EmptyState icon={<CheckCheck size={28}/>} title={id ? '打开模拟提案' : '核对变化，再决定是否纳入 Canon'}>{id ? '正在读取保存的提案与原始模拟依据。' : '从收件箱选择提案，比较当前设定、模拟依据与接受影响。'}</EmptyState>}
     </section></ReviewFrame>
-    {editing && candidate && comparison.current && !comparison.loading && !busy && <CandidateEditor candidate={candidate} entities={entities} candidates={[]} sourceLabel="原始模拟提交来源" onClose={() => setEditing(false)} onSaved={reload} saveOverride={value => simApi.edit(candidate, value)}/>}
+    {editing && candidate && comparison.current && !comparison.loading && !busy && <CandidateEditor candidate={candidate} entities={entities} candidates={[]} sourceLabel="原始模拟提交来源" onClose={() => setEditing(false)} onSaved={reload} saveOverride={value => simApi.edit(candidate, value, world)}/>}
     {confirmation && preview && candidate && comparison.current && <Dialog title="显式接受模拟提案" className="review-confirm-dialog" busy={busy} onClose={() => setConfirmation(false)}><p className="dialog-intro">确认后写入 Working Canon。请最后核对以下内容与处理方式。</p><section className="review-confirm-payload"><small>{kindNames[candidate.kind]}</small><h3>{title}</h3><p>{proposalValue(candidate.payload)}</p>{preview.field_mapping && <p>将保存为：{preview.field_mapping.label} → {preview.field_mapping.value}</p>}</section><p>{acceptanceEffect(preview, effectiveResolution)}</p>{effectiveResolution && <p>处理方式：{resolutionLabels[effectiveResolution]}</p>}{effectiveResolution === 'replace' && <div className="review-replaced-records">{preview.conflicts.map(record => <p key={record.id}>将替代：{record.predicate || record.title} · {record.value || record.description}</p>)}</div>}<p>来源：{preview.source.title} · 第{preview.source.seq}步；当前 Canon {preview.revision}。</p><small>原始事件、冻结输入与正文保持独立。</small>{error && <ErrorNotice>{error}</ErrorNotice>}<div className="dialog-actions"><Button disabled={busy} onClick={() => setConfirmation(false)}>返回比较</Button><Button variant="primary" disabled={!canAccept} onClick={() => void decide('accept')}>{busy ? '正在保存…' : '确认接受并写入 Canon'}</Button></div></Dialog>}
   </>;
 }

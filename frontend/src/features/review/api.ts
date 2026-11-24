@@ -229,6 +229,7 @@ export interface RelationshipState {
   version:number;
   strength:number|null;
   source_note:string;
+  map_connection?:boolean;
 }
 export interface CanonRelationship {
   id: string;

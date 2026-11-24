@@ -13,6 +13,9 @@ export interface History {node_id: string; version: number; title: string; saved
 export type LibraryItem = ContentNode & {work_title:string;excerpt:string};
 export interface LibraryPage {items:LibraryItem[];total:number;offset:number;limit:number}
 export interface ContentSummary {counts:Record<string,number>;works:{id:string;title:string;kind:string;content_count:number}[];recent:LibraryItem[]}
+export interface InspirationEvent {world_id:string;worldline_id?:string;seq?:number;event_id?:string;baseline_id?:string|null;canon_revision?:number;logical_tick?:number;accepted?:boolean;action_type?:string;summary?:string;route?:string;actor_id?:string;actor_name?:string;location_id?:string;location_name?:string}
+export interface InspirationSource extends InspirationEvent {event_count?:number;events?:InspirationEvent[]}
+export interface Inspiration {id:string;world_id:string;title:string;note:string;tags:string[];origin:'manual'|'simulation';source:InspirationSource;linked_node_ids:string[];linked_entity_ids:string[];linked_nodes:{id:string;title:string;work_id:string;work_title:string;version:number;status:string}[];linked_entities:{id:string;name:string;kind:string;version:number;status:string}[];status:'active'|'archived';version:number;created_at:string;updated_at:string}
 export const workKinds: Record<string,string> = {novel:'小说',script:'剧本',game:'游戏叙事',side_story:'外传',lore:'设定文档',other:'其他'};
 export const entityKinds: Record<string,string> = {character:'人物',location:'地点',faction:'组织 / 阵营',item:'物品',species:'种族',concept:'概念',world_rule:'世界规则',custom:'自定义'};
 export const emptyDocument: DocumentJSON = {type:'doc',content:[{type:'paragraph'}]};
@@ -51,4 +54,8 @@ export const creationApi = {
   mergePreview:(id:string,data:MergeRequest)=>request<MergePreview>(`/entities/${id}/merge-preview`,write('POST',data)),
   merge:(id:string,data:MergeRequest)=>request<MergePreview>(`/entities/${id}/merge`,write('POST',data)),
   search: (world:string, q:string) => request<{nodes:(ContentNode & {excerpt:string})[];entities:Entity[]}>(`/worlds/${world}/search?q=${encodeURIComponent(q)}`),
+  inspirations: (world:string, params:URLSearchParams = new URLSearchParams()) => request<{items:Inspiration[];total:number;offset:number;limit:number}>(`/worlds/${world}/inspirations?${params}`),
+  inspiration: (id:string) => request<Inspiration>(`/inspirations/${id}`),
+  createInspiration: (world:string, data:{title:string;note:string;tags?:string[];linked_nodes?:string[];linked_entities?:string[]}) => request<Inspiration>(`/worlds/${world}/inspirations`,write('POST',data)),
+  updateInspiration: (item:Inspiration, data:Partial<Pick<Inspiration,'title'|'note'|'tags'|'status'|'linked_node_ids'|'linked_entity_ids'>>) => request<Inspiration>(`/inspirations/${item.id}`,write('PATCH',{version:item.version,title:data.title,note:data.note,tags:data.tags,status:data.status,linked_nodes:data.linked_node_ids,linked_entities:data.linked_entity_ids})),
 };

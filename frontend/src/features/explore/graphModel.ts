@@ -2,7 +2,8 @@ import type { XYPosition } from '@xyflow/react';
 import type { ExploreEdge, ExploreGraph } from './api';
 
 export interface EdgeGroup { id: string; source: string; target: string; family: ExploreEdge['family']; records: ExploreEdge[] }
-export type Selection = { type: 'node' | 'edge' | 'record'; key: string };
+export type CanvasSelection = { type: 'node' | 'edge'; key: string };
+export type Selection = CanvasSelection | { type: 'record'; key: string };
 export function groupEdges(graph: ExploreGraph): EdgeGroup[] {
   const groups = new Map<string, EdgeGroup>();
   for (const edge of graph.edges) {

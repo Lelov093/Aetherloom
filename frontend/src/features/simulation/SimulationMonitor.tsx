@@ -1,14 +1,13 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Pause, Play, PanelLeft, PanelRight, MapPin, ChevronDown, Info, Radio, Grid2X2, Ellipsis, CheckCheck, RotateCcw } from 'lucide-react';
 import { Button, Dialog, ErrorNotice } from '../../components/ui';
-import { WorkspaceHeader } from '../../components/WorkspaceContext';
 import { Select } from '../../components/FormControls';
 import { Portrait, PortraitEditor, usePortraits } from '../objects/Portrait';
 import { simStatus, type Session, type SessionSummary } from './api';
 import { presentEvents } from './presentation';
 import { useMonitorLayout } from './useMonitorLayout';
-import { MonitorPane } from './MonitorPane';
+import { MonitorFrame } from './MonitorFrame';
 import { SimulationLog } from './SimulationLog';
 import { SimulationMessage } from './SimulationMessage';
 import { SimulationInspector, type Focus } from './SimulationInspector';
@@ -17,7 +16,8 @@ export function SimulationMonitor({ session, sessions, requestedSession, busy, s
   session: Session; sessions: SessionSummary[]; requestedSession: string; busy: boolean; switching: boolean; initialEvent?: number; error: string; connection: string;
   onSession: (id: string) => void; onControl: (action: string) => void; onPropose: (seq: number, kind: string) => void; onBack: () => void; onRetry: () => void;
 }) {
-  const { layout, set, narrow, resize, start, move, end, reset, bounds } = useMonitorLayout();
+  const frameLayout = useMonitorLayout();
+  const {layout,set,narrow,reset} = frameLayout;
   const { portraits, reload } = usePortraits(session.world_id);
   const [focus, setFocus] = useState<Focus>(), [location, setLocation] = useState(''), [follow, setFollow] = useState('');
   const [auto, setAuto] = useState(!initialEvent), [budget, setBudget] = useState(false), [portrait, setPortrait] = useState(''), [unread, setUnread] = useState(false);
@@ -61,14 +61,8 @@ export function SimulationMonitor({ session, sessions, requestedSession, busy, s
     if (!switching && initialEvent && events.some(p => p.event.seq === initialEvent)) select(initialEvent, true);
   }, [initialEvent, session.id, switching]);
   const toggle = (side: 'log' | 'inspector') => set({ [side]: !layout[side] });
-  const divider = (side: 'left' | 'right') => <button type="button" className="monitor-divider" role="separator" aria-label={side === 'left' ? '调整世界日志宽度' : '调整详情宽度'}
-    aria-orientation="vertical" aria-valuemin={bounds[side].min} aria-valuemax={bounds[side].max} aria-valuenow={layout[side]} title="拖动调宽；方向键微调；Home / End 调至两端"
-    onPointerDown={event => start(side, event)} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}
-    onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); resize(side, event.key === 'Home' ? bounds[side].min : event.key === 'End' ? bounds[side].max : layout[side] + (event.key === 'ArrowRight' ? 16 : -16) * (side === 'left' ? 1 : -1)); } }}/>
   const currentInList = sessions.some(value => value.id === session.id);
-  return <main id="main-content" className="simulation-monitor" aria-busy={switching} style={{ '--monitor-left': `${layout.left}px`, '--monitor-right': `${layout.right}px` } as CSSProperties}>
-    <h1 className="sr-only">{session.title}</h1>
-    <WorkspaceHeader><div className="simulation-context">
+  return <MonitorFrame title={session.title} layout={frameLayout} header={<div className="simulation-context">
       <button type="button" className="monitor-icon" aria-label="返回世界线列表" onClick={onBack}><ArrowLeft size={18}/></button>
       <Select className="sim-session-picker" aria-label="当前世界线" title={sessions.find(value => value.id === requestedSession)?.title || session.title} value={requestedSession} disabled={busy && !switching} onChange={event => onSession(event.target.value)}>
         {!currentInList && <option value={session.id}>{session.title}</option>}{sessions.map(value => <option key={value.id} value={value.id}>{value.title}</option>)}
@@ -76,13 +70,10 @@ export function SimulationMonitor({ session, sessions, requestedSession, busy, s
       <span className={`monitor-status ${running ? 'is-running' : ''}`} title={session.error || undefined}><Radio size={13}/>{simStatus[session.status] || session.status}</span>
       <span className="monitor-step">第{session.cursor}步</span>
       <button type="button" className={`monitor-icon ${budgetNotice ? 'has-notice' : ''}`} aria-label="额度与起点" disabled={switching} title={session.error || '起点与运行额度'} onClick={() => setBudget(true)}><Info size={17}/></button>
-    </div></WorkspaceHeader>
-    {switching && <div className="monitor-switch-status" role="status">{error || '正在切换世界线…'}{error && <Button variant="ghost" onClick={onRetry}>重试</Button>}</div>}
-    <div className={`monitor-body ${layout.log ? 'has-log' : ''} ${layout.inspector ? 'has-inspector' : ''}`} inert={switching}>
-      {layout.log && <><MonitorPane side="log" floating={narrow} onClose={() => set({ log: false })}>
-        <SimulationLog session={session} events={events} name={name} portraits={portraits} selected={selected} character={focus?.kind === 'character' ? focus.id : undefined} onSelect={seq => select(seq, true)} scrollRef={log}/>
-      </MonitorPane>{!narrow && divider('left')}</>}
-      <section className="monitor-scene" aria-label="文本世界场景">
+    </div>}
+    log={<SimulationLog session={session} events={events} name={name} portraits={portraits} selected={selected} character={focus?.kind === 'character' ? focus.id : undefined} onSelect={seq => select(seq, true)} scrollRef={log}/>} inspector={<SimulationInspector session={session} focus={focus} events={events} portraits={portraits} busy={busy} name={name} onFocus={inspect} onPropose={onPropose} onPortrait={setPortrait} follow={follow} onFollow={setFollow}/>} switching={switching} notice={switching && <div className="monitor-switch-status" role="status">{error || '正在切换世界线…'}{error && <Button variant="ghost" onClick={onRetry}>重试</Button>}</div>} overlays={<>    {budget && <Dialog title="这段世界线的起点与额度" onClose={() => setBudget(false)}><p>{session.manifest.setup.start_label}</p><p>{session.manifest.setup.time_basis}</p><p>行动步：{session.cursor} / {session.manifest.setup.max_steps}</p><p>模型请求：{session.calls} / {session.manifest.setup.max_calls}</p><p>费用／预留：¥{session.cost.toFixed(4)} / ¥{session.manifest.setup.budget_yuan.toFixed(2)}</p>{session.error && <p>{session.error}</p>}<p>继续运行会调用模型。创建起点、阅读记录和选择审阅提案无需调用模型。</p><p>模拟结果进入正式设定仍需你显式接受。</p><Button onClick={() => setBudget(false)}>关闭</Button></Dialog>}
+    {portrait && <PortraitEditor id={portrait} name={name(portrait)} world={session.world_id} onSaved={() => { void reload().catch(() => setPortrait('')); }} onClose={() => setPortrait('')}/>}
+</>}>
         <header className="scene-heading"><div className="scene-view-label"><Grid2X2 size={17}/><h2>世界视图</h2></div>
           <label className="scene-location"><MapPin size={15}/><span className="sr-only">查看场景地点</span><Select aria-label="查看场景地点" value={location} onChange={event => { setLocation(event.target.value); setAuto(false); }}><option value="">全部场景</option>{Object.keys(session.state.places).map(id => <option key={id} value={id}>{name(id)}</option>)}</Select></label>
           <span className="scene-observer">作者观察 · 独立模拟</span>
@@ -109,12 +100,6 @@ export function SimulationMonitor({ session, sessions, requestedSession, busy, s
             <button type="button" onClick={() => setBudget(true)}><Info size={15}/>起点与额度</button><button type="button" onClick={reset}><RotateCcw size={15}/>恢复默认布局</button><button type="button" onClick={onBack}><ArrowLeft size={15}/>世界线列表</button>
           </div></details>
         </footer>
-      </section>
-      {layout.inspector && <>{!narrow && divider('right')}<MonitorPane side="inspector" floating={narrow} onClose={() => set({ inspector: false })}>
-        <SimulationInspector session={session} focus={focus} events={events} portraits={portraits} busy={busy} name={name} onFocus={inspect} onPropose={onPropose} onPortrait={setPortrait} follow={follow} onFollow={setFollow}/>
-      </MonitorPane></>}
-    </div>
-    {budget && <Dialog title="这段世界线的起点与额度" onClose={() => setBudget(false)}><p>{session.manifest.setup.start_label}</p><p>{session.manifest.setup.time_basis}</p><p>行动步：{session.cursor} / {session.manifest.setup.max_steps}</p><p>模型请求：{session.calls} / {session.manifest.setup.max_calls}</p><p>费用／预留：¥{session.cost.toFixed(4)} / ¥{session.manifest.setup.budget_yuan.toFixed(2)}</p>{session.error && <p>{session.error}</p>}<p>继续运行会调用模型。创建起点、阅读记录和选择审阅提案无需调用模型。</p><p>模拟结果进入正式设定仍需你显式接受。</p><Button onClick={() => setBudget(false)}>关闭</Button></Dialog>}
-    {portrait && <PortraitEditor id={portrait} name={name(portrait)} world={session.world_id} onSaved={() => { void reload().catch(() => setPortrait('')); }} onClose={() => setPortrait('')}/>}
-  </main>;
+
+  </MonitorFrame>;
 }

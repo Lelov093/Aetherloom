@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import { Button, ErrorNotice } from '../../components/ui';
 import { request } from './api';
 import { ImportSources } from './ImportSources';
@@ -9,6 +10,8 @@ import type { MaterialSource } from './MaterialSources';
 type Snapshot = MaterialSource & {text:string;metadata:Record<string,string>};
 export function SourceReader({world}:{world:string}) {
   const {sourceId} = useParams(), [params] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [source,setSource] = useState<Snapshot>(), [error,setError] = useState(''), [retry,setRetry] = useState(0);
   const [loading,setLoading] = useState(true);
   const mark = useRef<HTMLElement>(null);
@@ -21,6 +24,7 @@ export function SourceReader({world}:{world:string}) {
   const chars = Array.from(source?.text || '');
   return <main id="main-content" className="page source-reader">
     <span className="eyebrow">SAVED MATERIAL SOURCE</span>
+    {location.state?.exploreWorld === world && <div className="canon-row-actions"><Button variant="ghost" onClick={() => navigate(-1)}><ArrowLeft size={15}/>返回探索</Button></div>}
     {error&&<><ErrorNotice>{error}</ErrorNotice><Button onClick={()=>setRetry(v=>v+1)}>重新读取</Button></>}
     {loading&&<p role="status">正在读取保存的来源版本…</p>}
     {source&&<div aria-busy={loading} inert={loading || !!error}>

@@ -47,6 +47,8 @@ def activity(world_id: str, request: Request):
     with repo.connection() as conn:
         pending = conn.execute("SELECT count(*) FROM review_candidates WHERE world_id=? AND status IN ('pending','later')", (world_id,)).fetchone()[0]
         simulation_pending = conn.execute("SELECT count(*) FROM simulation_proposals WHERE world_id=? AND status='pending'", (world_id,)).fetchone()[0]
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_v2_review'").fetchone():
+            simulation_pending += conn.execute("SELECT count(*) FROM runtime_v2_review WHERE world_id=? AND status='pending'", (world_id,)).fetchone()[0]
         active = conn.execute("SELECT count(*) FROM extraction_tasks WHERE world_id=? AND status IN ('queued','running')", (world_id,)).fetchone()[0]
         tasks = [dict(row) for row in conn.execute('''SELECT t.id,t.node_id,t.status,t.completed_chunks,
             json_array_length(t.chunks) AS total_chunks,t.updated_at,n.title,w.title AS work_title,w.id AS work_id

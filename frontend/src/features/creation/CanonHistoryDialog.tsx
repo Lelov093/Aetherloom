@@ -186,6 +186,7 @@ const historyLabels: Record<string, string> = {
   participants: "参与者",
   label: "关系状态",
   strength: "关系强度",
+  map_connection: "地图连通",
   relationship_id: "稳定关系",
   before_state: "事件前状态",
   after_state: "事件后状态",

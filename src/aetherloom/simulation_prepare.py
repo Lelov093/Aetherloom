@@ -7,6 +7,7 @@ from .canon_management import TABLES
 
 
 def freeze(repo, conn, world):
+    from .runtime.review import frozen_sources
     entities = [record(r) for r in conn.execute('SELECT * FROM entities WHERE world_id=?', (world,))]
     ids = {e['id'] for e in entities}
     assertions = [record(r) for r in conn.execute('SELECT * FROM assertions WHERE world_id=?', (world,))]
@@ -26,7 +27,7 @@ def freeze(repo, conn, world):
     return dict(world=repo.required(conn, 'worlds', world), revision=canon.revision(conn, world),
                 entities=entities, assertions=assertions, events=events, relationships=relations,
                 relationship_states=states, history=history, sources=sources, canon_sources=extracted,
-                source_versions=source_versions,
+                source_versions=source_versions, runtime_v2_sources=frozen_sources(conn, world),
                 fields=[dict(r) for r in conn.execute('SELECT * FROM world_fields WHERE world_id=?', (world,))],
                 changes=[dict(r) for r in conn.execute('SELECT * FROM canon_changes WHERE world_id=?', (world,))],
                 simulation_sources=[dict(r) for r in conn.execute('SELECT x.*,p.simulation_id,p.seq,p.payload AS proposal_payload,s.revision_id,e.payload AS event_payload,e.diff,e.narration FROM simulation_sources x JOIN simulation_proposals p ON p.id=x.proposal_id JOIN simulations s ON s.id=p.simulation_id JOIN simulation_events e ON e.simulation_id=p.simulation_id AND e.seq=p.seq WHERE p.world_id=?', (world,))])

@@ -18,11 +18,13 @@ export const timeLayerNames = { event: '正式事件', relationship: '关系状�
 export interface TimelineRecord {
   key: string; kind: TimeLayer; id: string; label: string; value: string; version: number;
   valid_from: string | null; valid_until: string | null; lane_key: string; lane_label: string;
+  location_id?: string | null;
   time: { start: number | null; end: number | null; certainty: 'dated' | 'partial' | 'undated' | 'invalid' };
   objects: { key: string; label: string; kind: string }[];
 }
 export interface TimelinePage {
   focus: string; requested_focus: string; focus_object: ExploreNode | null; revision: number;
+  relationship_scope?: { id: string; endpoints: (TimelineRecord['objects'][number] & { active: boolean })[] } | null;
   items: TimelineRecord[]; counts: Record<'dated' | 'partial' | 'undated' | 'invalid' | 'outside', number>;
   bounds: { start: number | null; end: number | null }; total: number; remaining: number; offset: number;
 }
@@ -38,24 +40,31 @@ export interface SourceLink { label: string; to: string; kind: string }
 export interface Detail {
   kind: string; id: string; title: string;
   record: { kind?: string; aliases?: string[]; status: string; version: number; description?: string; value?: string;
+    location_id?: string | null;
     valid_from?: string | null; valid_until?: string | null; strength?: number | null; source_note?: string;
     metadata?: { before_state?: string; after_state?: string } };
   settings: { label: string; text: string }[];
   facts: (Fact & { sources: SourceLink[] })[];
-  references: { key: string; label: string; role: string; active: boolean }[];
+  references: { key: string; label: string; kind: string; role: string; active: boolean }[];
   sources: SourceLink[];
   states: { id: string; label: string; valid_from: string | null; valid_until: string | null; status: string; version: number }[];
   history: CanonHistory[];
 }
-export interface GraphQuery { focus: string; hops: number; expanded: string[]; families: Family[]; kinds: string[]; limit: number; range?: YearRange; uncertain?: boolean }
+export interface GraphQuery { focus: string; hops: number; expanded: string[]; families: Family[]; kinds: string[]; limit: number; range?: YearRange; uncertain?: boolean; eventId?: string; projection: 'relationship' | 'map' }
 export const exploreApi = {
   graph: (world: string, query: GraphQuery) => request<ExploreGraph>(`/worlds/${world}/explore/graph?${new URLSearchParams({
-    focus: query.focus, hops: String(query.hops), expanded: query.expanded.join(','), families: query.families.join(','), kinds: query.kinds.join(','), limit: String(query.limit),
+    focus: query.focus, hops: String(query.hops), expanded: query.expanded.join(','), families: query.families.join(','), kinds: query.kinds.join(','), limit: String(query.limit), event_id: query.eventId || '', projection: query.projection,
     ...yearParams(query.range, query.uncertain),
   })}`),
-  timeline: (world: string, focus: string, range: YearRange, layers: TimeLayer[], uncertain: boolean, section: string, offset: number, locate = '') => request<TimelinePage>(`/worlds/${world}/explore/timeline?${new URLSearchParams({ focus, layers: layers.join(','), ...yearParams(range, uncertain), section, offset: String(offset), locate, limit: section === 'placed' ? '120' : '40' })}`),
+  timeline: (world: string, focus: string, range: YearRange, layers: TimeLayer[], uncertain: boolean, section: string, offset: number, locate = '', relationship = '') => request<TimelinePage>(`/worlds/${world}/explore/timeline?${new URLSearchParams({ focus, relationship, layers: layers.join(','), ...yearParams(range, uncertain), section, offset: String(offset), locate, limit: section === 'placed' ? '120' : '40' })}`),
   detail: (world: string, kind: string, id: string) => request<Detail>(`/worlds/${world}/explore/detail/${kind}/${id}`),
 };
 export function period(value: { valid_from?: string | null; valid_until?: string | null }) {
   return value.valid_from || value.valid_until ? `${value.valid_from || '起始未知'} → ${value.valid_until || '结束未知'}` : '故事时间未注明';
+}
+
+export function recordMapFocus(record: { kind: string; location_id?: string | null }, objects: { key: string; kind: string }[], focus?: string) {
+  const locations = objects.filter(object => object.kind === 'location');
+  if (record.kind === 'event') return locations.find(object => object.key === `entity:${record.location_id}`)?.key;
+  return (locations.find(object => object.key === focus) || locations[0])?.key;
 }

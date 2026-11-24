@@ -55,6 +55,7 @@ export function CanonRecordEditor({
     [strength, setStrength] = useState(
       state?.strength == null ? "" : String(state.strength),
     ),
+    [mapConnection, setMapConnection] = useState(state?.map_connection ?? false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [loaded, setLoaded] = useState(false);
@@ -75,6 +76,8 @@ export function CanonRecordEditor({
       active = false;
     };
   }, [world]);
+  const hasLocationPair = subject !== object &&
+    [subject, object].every(id => entities.some(entity => entity.id === id && entity.kind === 'location'));
   const entitySelect = (
     label: string,
     value: string,
@@ -133,6 +136,7 @@ export function CanonRecordEditor({
                     object_id: object,
                     label: name,
                     strength: strength === "" ? null : Number(strength),
+                    ...(hasLocationPair ? { map_connection: mapConnection } : {}),
                     ...(state ? { version: state.version } : {}),
                   };
             const url =
@@ -269,6 +273,10 @@ export function CanonRecordEditor({
           <>
             {entitySelect("关系主体", subject, setSubject, !!pair)}
             {entitySelect("关系对象", object, setObject, !!pair)}
+            {hasLocationPair && <fieldset className="record-picker">
+              <label><input type="checkbox" checked={mapConnection} onChange={e => setMapConnection(e.target.checked)}/>标记为地图连通</label>
+              <p className="context-hint">在 Canon Map 上显示这条关系及其有效时间。角色通行由模拟规则决定。</p>
+            </fieldset>}
             <label className="field">
               <span>关系强度（0–1，可留空）</span>
               <NumberInput

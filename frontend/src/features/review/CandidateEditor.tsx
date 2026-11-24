@@ -218,6 +218,13 @@ export function CandidateEditor({
             {reference("location_ref", "地点（可选）", true)}
             <fieldset>
               <legend>参与者</legend>
+              {data.participants?.filter(ref => !options.some(o => o.id === ref)).map(ref => <label className="field" key={ref}>
+                <span>未绑定参与者：{ref}</span>
+                <select aria-label={`映射参与者 ${ref}`} value="" required onChange={e => setData({...data, participants: data.participants?.map(value => value === ref ? e.target.value : value)})}>
+                  <option value="">明确选择原作身份…</option>
+                  {options.filter(o => o.kind === 'character').map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              </label>)}
               {options.map((o) => (
                 <label className="participant-option" key={o.id}>
                   <input

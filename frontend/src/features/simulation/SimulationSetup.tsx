@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
-import {Link,useNavigate,useSearchParams} from 'react-router-dom';
+import {Link,useLocation,useNavigate,useSearchParams} from 'react-router-dom';
 import {Button,ErrorNotice} from '../../components/ui';
 import {NumberInput} from '../../components/FormControls';
 import {creationApi,type LibraryItem,type ContentNode} from '../creation/api';
@@ -11,6 +11,12 @@ const toggle=(ids:string[],id:string)=>ids.includes(id)?ids.filter(v=>v!==id):[.
 
 export function SimulationSetup({world,onCreated}:{world:string;onCreated:()=>void}){
  const navigate=useNavigate(),[params]=useSearchParams();
+ const location=useLocation();
+ const referenceId=params.get('canon_event');
+ const referenceVersion=Number(params.get('event_version'));
+ const backToExplore=referenceId && location.state?.exploreWorld===world
+  ? <Button variant="ghost" onClick={()=>navigate(-1)}>返回探索</Button>
+  : null;
  const draftKey=`aetherloom:simulation-draft:${world}`;
  const savedDraft=useRef<Setup|null>((()=>{try{return JSON.parse(sessionStorage.getItem(draftKey)||'null')}catch{return null}})());
  const [inputs,setInputs]=useState<Inputs>(),[data,setData]=useState<Setup>(savedDraft.current?{...savedDraft.current,confirmed:false}:initial),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -39,8 +45,18 @@ export function SimulationSetup({world,onCreated}:{world:string;onCreated:()=>vo
   start=Array.from(material.plain_text.slice(0,start)).length;end=Array.from(material.plain_text.slice(0,end)).length;
   update({materials:[...data.materials,{node_id:material.id,version:material.version,start,end,purpose,known_by:purpose==='agent_knowledge'?receivers:[]}]});setQuote('');setReceivers([]);
  }
- if(!inputs)return <section><ErrorNotice>{error||'正在读取正式资料…'}</ErrorNotice><Button onClick={()=>navigate(0)}>重新载入</Button></section>;
+ if(!inputs)return <section>{backToExplore}<ErrorNotice>{error||'正在读取正式资料…'}</ErrorNotice><Button onClick={()=>navigate(0)}>重新载入</Button></section>;
+ const referenceEvent=inputs.events.find(event=>event.id===referenceId && event.status==='active');
  return <section className="sim-setup"><h2>准备本次场景</h2><p>只准备这次模拟需要的信息。未选资料、作者计划和未审阅候选不会自动成为世界事实。<Link to={`/worlds/${world}/create/objects`}>整理人物与地点 →</Link></p>
+ {referenceId && <section className="sim-card" aria-label="参考事件">
+  {backToExplore}
+  {referenceEvent ? <>
+    <h3>{referenceEvent.title} · v{referenceEvent.version}</h3>
+    <p>故事时间 · {referenceEvent.valid_from || '起始未知'} → {referenceEvent.valid_until || '结束未知'}</p>
+    {!!referenceVersion && referenceVersion!==referenceEvent.version && <p role="status">从探索选中 v{referenceVersion}，当前正式记录为 v{referenceEvent.version}。</p>}
+    <p className="context-hint">此事件供查阅。请在下方确认本次起点、采用的记录和角色知识。</p>
+  </> : <p>入口事件已不在当前正式记录中。</p>}
+ </section>}
  {error&&<div ref={errorRef}><ErrorNotice>{error}</ErrorNotice></div>}<Button onClick={async()=>{try{const i=await simApi.inputs(world);setInputs(i);update({expected_revision:i.revision})}catch(e){setError((e as Error).message)}}}>重新读取当前 Canon 基线</Button>
  <div className="sim-fields">
   <label className="field"><span>世界线名称</span><input value={data.title} onChange={e=>update({title:e.target.value})}/></label>

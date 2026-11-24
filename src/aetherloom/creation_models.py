@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Status = Literal['active', 'archived', 'deleted']
+InspirationStatus = Literal['active', 'archived']
+InspirationOrigin = Literal['manual', 'simulation']
 WorkKind = Literal['novel', 'script', 'game', 'side_story', 'lore', 'other']
 EntityKind = Literal['character', 'location', 'faction', 'item', 'species', 'concept', 'world_rule', 'custom']
 MaterialCategory = Literal['unclassified', 'prose', 'lore', 'outline', 'theme', 'foreshadowing', 'note']
@@ -125,6 +127,24 @@ class NodePatch(Model):
         if any(getattr(self, key) is None for key in self.model_fields_set - {'parent_id'}):
             raise ValueError('修改字段不能为空。')
         return self
+
+
+class InspirationCreate(Model):
+    title: str = Field(min_length=1, max_length=160)
+    note: str = Field(default='', max_length=20000)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    linked_nodes: list[str] = Field(default_factory=list, max_length=12)
+    linked_entities: list[str] = Field(default_factory=list, max_length=12)
+
+
+class InspirationPatch(Model):
+    version: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    note: str | None = Field(default=None, max_length=20000)
+    tags: list[str] | None = Field(default=None, max_length=20)
+    status: InspirationStatus | None = None
+    linked_nodes: list[str] | None = Field(default=None, max_length=12)
+    linked_entities: list[str] | None = Field(default=None, max_length=12)
 
 
 class Section(Model):

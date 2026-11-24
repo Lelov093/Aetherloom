@@ -27,6 +27,7 @@ GRAPH = """WITH objects AS (
  s.description,s.source_note,'' AS metadata
  FROM relationship_states s JOIN temporal_relationships r ON r.id=s.relationship_id
  WHERE r.world_id=:world AND r.merged_into IS NULL AND r.status='active' AND s.status='active'
+ AND (NOT :map_view OR s.map_connection=1)
  UNION ALL SELECT 'assertion:'||id,'entity:'||subject_id,'entity:'||object_id,
  'assertion','assertion',id,predicate,valid_from,valid_until,NULL,version,
  value,source_note,'' FROM assertions
@@ -76,30 +77,51 @@ def neighbourhood(world: str, request: Request, focus: str = '', hops: int = Que
                   expanded: str = '', families: str = ','.join(FAMILIES), kinds: str = '',
                   limit: int = Query(60, ge=5, le=120),
                   year_start: int | None = Query(None, ge=-999999, le=999999),
-                  year_end: int | None = Query(None, ge=-999999, le=999999), uncertain: bool = True):
+                  year_end: int | None = Query(None, ge=-999999, le=999999), uncertain: bool = True,
+                  event_id: str = '', projection: Literal['relationship', 'map'] = 'relationship'):
     repo = request.app.state.creation
     repo.get(world)
     validate_range(year_start, year_end)
     selected = [f for f in families.split(',') if f]
     if set(selected) - set(FAMILIES):
         raise CreationError('联系类别无效。', 400)
+    map_view = projection == 'map'
+    selected_kinds = ['location'] if map_view else [k for k in kinds.split(',') if k]
+    if map_view:
+        selected = ['relationship']
     extra = list(dict.fromkeys(k for k in expanded.split(',') if k))
     if len(extra) > 20:
         raise CreationError('请先收起部分分支，再继续展开。', 400)
     with repo.connection() as conn:
         conn.execute('BEGIN')
         register(conn)
+        revision = canon.revision(conn, world)
         requested = focus
+        if map_view and event_id:
+            location = conn.execute("""SELECT a.id FROM canon_events e JOIN entities a ON a.id=e.location_id
+                WHERE e.id=? AND e.world_id=? AND e.status='active' AND a.world_id=e.world_id
+                AND a.kind='location' AND a.status='active' AND a.merged_into IS NULL""", (event_id, world)).fetchone()
+            if not location:
+                return dict(focus='', requested_focus='', revision=revision, nodes=[], edges=[], remaining_links=0, expanded=[])
+            focus = requested = f"entity:{location['id']}"
+        elif focus:
+            focus = resolve(repo, conn, world, focus)
+            if map_view and (not focus.startswith('entity:') or not conn.execute(
+                "SELECT 1 FROM entities WHERE id=? AND world_id=? AND kind='location'", (focus[7:], world)
+            ).fetchone()):
+                focus = requested = ''
         if not focus:
-            row = conn.execute("SELECT 'entity:'||id FROM entities WHERE world_id=? AND status='active' AND merged_into IS NULL ORDER BY name,id LIMIT 1", (world,)).fetchone()
-            if not row:
-                row = conn.execute("SELECT 'event:'||id FROM canon_events WHERE world_id=? AND status='active' ORDER BY title,id LIMIT 1", (world,)).fetchone()
+            if map_view:
+                row = conn.execute("SELECT 'entity:'||id FROM entities WHERE world_id=? AND kind='location' AND status='active' AND merged_into IS NULL ORDER BY name,id LIMIT 1", (world,)).fetchone()
+            else:
+                row = conn.execute("SELECT 'entity:'||id FROM entities WHERE world_id=? AND status='active' AND merged_into IS NULL ORDER BY name,id LIMIT 1", (world,)).fetchone()
+                if not row:
+                    row = conn.execute("SELECT 'event:'||id FROM canon_events WHERE world_id=? AND status='active' ORDER BY title,id LIMIT 1", (world,)).fetchone()
             focus = row[0] if row else ''
         if not focus:
-            return dict(focus='', requested_focus=requested, revision=canon.revision(conn, world), nodes=[], edges=[], remaining_links=0, expanded=[])
-        focus = resolve(repo, conn, world, focus)
-        params = dict(world=world, focus=focus, families=json.dumps(selected), kinds=json.dumps([k for k in kinds.split(',') if k]),
-                      lower=year_start, upper=year_end, uncertain=uncertain)
+            return dict(focus='', requested_focus=requested, revision=revision, nodes=[], edges=[], remaining_links=0, expanded=[])
+        params = dict(world=world, focus=focus, families=json.dumps(selected), kinds=json.dumps(selected_kinds),
+                      lower=year_start, upper=year_end, uncertain=uncertain, map_view=map_view)
         depths = {focus: 0}
         visited, edges = set(), {}
 
@@ -154,7 +176,7 @@ def neighbourhood(world: str, request: Request, focus: str = '', hops: int = Que
         if year_start is not None or year_end is not None:
             for edge in edges.values():
                 edge['time_uncertain'] = timing(edge['valid_from'], edge['valid_until'])['certainty'] != 'dated'
-        return dict(focus=focus, requested_focus=requested, revision=canon.revision(conn, world), nodes=nodes,
+        return dict(focus=focus, requested_focus=requested, revision=revision, nodes=nodes,
                     edges=list(edges.values()), remaining_links=max(0, total-len(edges)), expanded=sorted(visited))
 
 
@@ -182,11 +204,17 @@ def detail(world: str, kind: Literal['entity', 'assertion', 'event', 'relationsh
             identity = repo.canonical_entity(conn, identity, world)['id']
             value = repo.object_snapshot(conn, kind, identity)
         references = []
+        reference_keys = set()
         def reference(key, label):
+            if key in reference_keys:
+                return
             node_kind, node_id = key.split(':', 1)
             obj = repo.required(conn, 'entities' if node_kind == 'entity' else 'canon_events', node_id)
             if obj['world_id'] == world:
-                references.append(dict(key=key, label=obj.get('name', obj.get('title')), role=label, active=obj['status']=='active' and not obj.get('merged_into')))
+                reference_keys.add(key)
+                references.append(dict(key=key, label=obj.get('name', obj.get('title')),
+                                       kind=obj['kind'] if node_kind == 'entity' else 'event',
+                                       role=label, active=obj['status']=='active' and not obj.get('merged_into')))
         facts, settings = [], []
         if kind == 'entity':
             title = value['name']
@@ -196,6 +224,13 @@ def detail(world: str, kind: Literal['entity', 'assertion', 'event', 'relationsh
                 fact = record(row)
                 fact['sources'] = source_links(repo, conn, world, 'assertion', fact['id'])
                 facts.append(fact)
+                if row['object_id']:
+                    reference('entity:' + row['object_id'], '正式事实引用')
+            if value['kind'] == 'location':
+                for event_row in conn.execute("SELECT id FROM canon_events WHERE world_id=? AND location_id=? AND status='active' ORDER BY valid_from,id", (world, identity)):
+                    reference('event:' + event_row['id'], '关联事件')
+                    for participant in conn.execute("SELECT entity_id FROM event_participants WHERE event_id=? ORDER BY entity_id", (event_row['id'],)):
+                        reference('entity:' + participant['entity_id'], '事件参与者')
         elif kind == 'assertion':
             title = value['predicate']
             reference('entity:'+value['subject_id'], '事实主体')
@@ -203,8 +238,21 @@ def detail(world: str, kind: Literal['entity', 'assertion', 'event', 'relationsh
                 reference('entity:'+value['object_id'], '引用对象')
         elif kind == 'relationship':
             title = value['label']
-            reference('entity:'+value['subject_id'], '记录主体')
-            reference('entity:'+value['object_id'], '记录对象')
+            ends = (value['subject_id'], value['object_id'])
+            reference('entity:' + ends[0], '记录主体')
+            reference('entity:' + ends[1], '记录对象')
+            events = conn.execute("""
+                SELECT e.id, e.location_id
+                FROM canon_events e
+                WHERE e.world_id=? AND e.status='active' AND (
+                    e.location_id IN (?, ?) OR EXISTS (
+                        SELECT 1 FROM event_participants p
+                        WHERE p.event_id=e.id AND p.entity_id IN (?, ?)))
+                ORDER BY e.title, e.id LIMIT 12
+            """, (world, *ends, *ends))
+            for event in events:
+                role = '关系端点是事件地点' if event['location_id'] in ends else '关系端点参与事件'
+                reference('event:' + event['id'], role)
         else:
             title = value['title']
             for participant in value['participants']:

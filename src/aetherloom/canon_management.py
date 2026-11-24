@@ -13,6 +13,16 @@ def fail(message,status=409):
     from .creation import CreationError
     raise CreationError(message,status)
 
+def initialize_map_connections(conn):
+    def has_column():
+        return any(row[1] == 'map_connection' for row in conn.execute('PRAGMA table_info(relationship_states)'))
+
+    if not has_column():
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if not has_column():
+                conn.execute('ALTER TABLE relationship_states ADD COLUMN map_connection INTEGER NOT NULL DEFAULT 0 CHECK(map_connection IN (0,1))')
+
 def initialize(conn):
     if conn.execute('SELECT 1 FROM schema_migrations WHERE version=4').fetchone():
         return
@@ -344,9 +354,13 @@ class CanonManagementMixin:
         with self.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
             self.writable_world(conn,world)
-            subject = self.canonical_entity(conn,data['subject_id'],world,True)['id']
-            target = self.canonical_entity(conn,data['object_id'],world,True)['id']
+            subject_entity = self.canonical_entity(conn,data['subject_id'],world,True)
+            target_entity = self.canonical_entity(conn,data['object_id'],world,True)
+            subject, target = subject_entity['id'], target_entity['id']
             if subject==target: fail('关系两端必须不同。',400)
+            map_connection = data.get('map_connection')
+            if map_connection and (subject_entity['kind'] != 'location' or target_entity['kind'] != 'location'):
+                fail('只有两个地点之间的关系可以标记为地图连通。',400)
             if identity:
                 old = self.object_snapshot(conn,'relationship',identity)
                 if old['world_id']!=world: fail('关系不属于当前世界。',400)
@@ -354,15 +368,17 @@ class CanonManagementMixin:
                 if old['status']!='active': fail('请先恢复关系状态。')
                 if (subject,target)!=(old['subject_id'],old['object_id']):
                     fail('稳定关系的两端不能改写，请创建另一关系。',400)
+                if map_connection is None:
+                    map_connection = old['map_connection']
                 self.save_snapshot(conn,'relationship',identity)
-                conn.execute('UPDATE relationship_states SET label=?,description=?,valid_from=?,valid_until=?,strength=?,source_note=?,version=version+1 WHERE id=?',
-                             (data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note'],identity))
+                conn.execute('UPDATE relationship_states SET label=?,description=?,valid_from=?,valid_until=?,strength=?,source_note=?,map_connection=?,version=version+1 WHERE id=?',
+                             (data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note'],map_connection,identity))
             else:
                 pair = conn.execute('SELECT id FROM temporal_relationships WHERE world_id=? AND subject_id=? AND object_id=?',(world,subject,target)).fetchone()
                 pair_id = pair['id'] if pair else str(uuid4())
                 if not pair: conn.execute('INSERT INTO temporal_relationships(id,world_id,subject_id,object_id) VALUES(?,?,?,?)',(pair_id,world,subject,target))
                 identity = str(uuid4())
-                conn.execute('INSERT INTO relationship_states(id,relationship_id,label,description,valid_from,valid_until,strength,source_note) VALUES(?,?,?,?,?,?,?,?)',
-                             (identity,pair_id,data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note']))
-            canon.changed(conn,world,'relationship',identity,data)
+                conn.execute('INSERT INTO relationship_states(id,relationship_id,label,description,valid_from,valid_until,strength,source_note,map_connection) VALUES(?,?,?,?,?,?,?,?,?)',
+                             (identity,pair_id,data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note'],bool(map_connection)))
+            canon.changed(conn,world,'relationship',identity,{**data, 'map_connection': bool(map_connection)})
             return self.save_snapshot(conn,'relationship',identity)

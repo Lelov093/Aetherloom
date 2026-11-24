@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
 import { creationApi, type Entity } from "../creation/api";
 import { CanonHistoryDialog } from "../creation/CanonHistoryDialog";
 import { reviewApi, type CanonRecords as Records } from "./api";
 import { CanonRecordEditor, type RecordEdit } from "./CanonRecordEditor";
 import { MaterialSources } from '../creation/MaterialSources';
+import { CanonSources } from './CanonSources';
+import { relationshipPath } from "../explore/links";
 
 export function CanonRecords({ world }: { world: string }) {
+  const navigate = useNavigate();
+  const fromExplore = useLocation().state?.exploreWorld === world;
   const [params, setParams] = useSearchParams(),
     entityId = params.get("entity") || undefined;
   const [records, setRecords] = useState<Records>(),
@@ -128,6 +132,9 @@ export function CanonRecords({ world }: { world: string }) {
       <Button variant="ghost" onClick={() => setHistory({ kind, id })}>
         修改历史
       </Button>
+      {kind === "event" && (fromExplore && params.get("event") === id
+        ? <Button variant="ghost" onClick={() => navigate(-1)}>返回探索</Button>
+        : state === "active" && <Link className="text-link" to={relationshipPath(world, { focus: `event:${id}` })}>在关系图查看 →</Link>)}
       <span className="context-hint">
         v{version} · {stateNames[state] || state}
       </span>
@@ -246,7 +253,7 @@ export function CanonRecords({ world }: { world: string }) {
               </div>
             )}
             {sources(e.sources)}
-            <MaterialSources world={world} kind="event" identity={e.id} editable={e.status==='active'}/>
+            <CanonSources record={{id:e.id}} kind="event" world={world}/><MaterialSources world={world} kind="event" identity={e.id} editable={e.status==='active'}/>
             {actions("event", e.id, e.version, e.status, e.title, () =>
               setEdit({ kind: "event", event: e }),
             )}
@@ -277,6 +284,7 @@ export function CanonRecords({ world }: { world: string }) {
                   <p>{s.description || "暂无说明"}</p>
                   <span>
                     {s.valid_from || "起始未知"} → {s.valid_until || "结束未知"}
+                    {s.map_connection && " · 地图连通"}
                     {s.strength != null && ` · 强度 ${s.strength}`} ·{" "}
                     {s.source_note || "正文候选"}
                   </span>

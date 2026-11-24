@@ -6,6 +6,9 @@ import { useWorkspaceTrail } from '../../components/WorkspaceContext';
 import { SimulationSetup } from './SimulationSetup';
 import { SimulationMonitor } from './SimulationMonitor';
 import { simApi, simStatus, type Session, type SessionSummary } from './api';
+import { ExperienceLibrary } from '../runtime/ExperienceLibrary';
+import { ScenarioSetup } from '../runtime/ScenarioSetup';
+import { RuntimeWorkspace } from '../runtime/RuntimeWorkspace';
 
 export function SimulationWorkspace({ world }: { world: string }) {
   const [params, setParams] = useSearchParams(), id = params.get('session');
@@ -13,6 +16,7 @@ export function SimulationWorkspace({ world }: { world: string }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]), [session, setSession] = useState<Session>();
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [connection, setConnection] = useState('');
   const [draftCycle, setDraftCycle] = useState(0), [loading, setLoading] = useState(true), [sessionLoading, setSessionLoading] = useState(Boolean(id));
+  const [purpose,setPurpose] = useState('all'),[experienceAvailable,setExperienceAvailable]=useState(false);
   const requestedId = useRef(id), retry = useRef<() => void>(() => {});
   requestedId.current = id;
   useWorkspaceTrail([{ label: id ? session?.title || '正在打开世界线' : '世界模拟' }]);
@@ -78,6 +82,8 @@ export function SimulationWorkspace({ world }: { world: string }) {
     finally { setBusy(false); }
   }
   function newScene() { sessionStorage.removeItem(`aetherloom:simulation-draft:${world}`); setDraftCycle(value => value + 1); setParams({ setup: 'new' }); }
+  if(params.has('line')) return <RuntimeWorkspace world={world}/>;
+  if(params.get('series')==='modern-academy')return <ScenarioSetup world={world} sourceNodeId={params.get('source') || undefined} onBack={()=>setParams({})} onCreated={line=>setParams({line,view:'2d'})}/>;
   if (id && session) return <SimulationMonitor key={session.id} session={session} sessions={sessions} requestedSession={id} busy={busy || sessionLoading || switching}
     switching={switching} initialEvent={requestedEvent} error={error} connection={connection} onSession={next => setParams({ session: next })} onControl={control} onPropose={propose}
     onBack={() => setParams({})} onRetry={() => retry.current()}/>;
@@ -86,13 +92,14 @@ export function SimulationWorkspace({ world }: { world: string }) {
     {error && <Button onClick={() => retry.current()}>重新读取</Button>}<Button variant="ghost" onClick={() => setParams({})}>返回世界线列表</Button>
   </main>;
   const setup = params.has('setup') || params.has('source');
-  return <main id="main-content" className="page simulation-page"><header className="page-heading"><div><span className="eyebrow">SIMULATION · 独立世界线</span>
-    <h1>{setup ? '为故事准备一个起点' : '你的世界线'}</h1><p>{setup ? '只准备本次真正需要的人物、地点与信息，再冻结起点。' : '从已保存的起点观察人物、对话与世界变化。结果进入正式设定仍需你的审阅。'}</p></div>{!setup && <Button variant="primary" onClick={newScene}>准备新场景</Button>}</header>
+  return <main id="main-content" className="page simulation-page"><header className="page-heading"><div><span className="eyebrow">{setup ? 'TEXT SIMULATION · 旧 Setup' : 'SIMULATION · 独立世界线'}</span>
+    <h1>{setup ? '为故事准备一个起点' : '你的世界线'}</h1><p>{setup ? '旧文本 Setup 保留正式记录、时间／状态起点、规则和运行额度，适合需要完整 Readiness 核对的文本模拟。' : '从已保存的起点观察人物、对话与世界变化。结果进入正式设定仍需你的审阅。'}</p></div>{!setup && <Button variant="primary" onClick={newScene}>准备新场景</Button>}</header>
     {error && <ErrorNotice>{error}</ErrorNotice>}
+    {!setup&&<><section className="sim-entry-guide" aria-label="模拟入口说明"><h2>选择模拟入口</h2><div className="sim-entry-guide-grid"><article><h3>新 Runtime 入口</h3><p>适用于学院系列和已选资料的快速准备。起点由模板、资料版本、角色知识和接收者共同冻结，先通过 Readiness 核对，再进入同一 Runtime 世界线。</p></article><article><h3>旧文本 Setup</h3><p>适用于需要完整配置正式记录、时间／状态起点、规则、角色和运行额度的文本模拟。入口继续保留，现有世界线不受影响。</p></article></div></section>{experienceAvailable&&<label className="academy-purpose-filter">模拟用途<select value={purpose} onChange={e=>setPurpose(e.target.value)}><option value="all">全部世界线</option><option value="original_projection">原作推演</option><option value="template_parallel">模板平行世界</option><option value="sandbox">自由沙盒</option><option value="unclassified">既有未分类</option></select></label>}<ExperienceLibrary world={world} onAvailable={setExperienceAvailable} filter={purpose} onCreate={()=>setParams({series:'modern-academy'})} onOpen={line=>setParams({line})}/></>}
     {setup ? <><Button variant="ghost" onClick={() => setParams({})}>← 返回世界线列表</Button><SimulationSetup key={draftCycle} world={world} onCreated={() => { void reloadList(); }}/></> : loading ? <p role="status">正在读取世界线…</p> : <section className="sim-library" aria-label="已保存世界线">
       {sessions.length === 0 ? <div className="sim-library-empty"><GitBranch size={32}/><h2>让第一段世界线从这里开始</h2><p>选取已有资料，安排参与角色与起点。创建不会调用模型。</p><Button variant="primary" onClick={newScene}>准备新场景</Button></div>
-        : sessions.map(value => <article className="sim-worldline" key={value.id}><span className="sim-worldline-icon"><GitBranch size={22}/></span><div>
-          <span className={`sim-library-status is-${value.status}`}>{simStatus[value.status] || value.status}</span><h2>{value.title}</h2>
+        : sessions.filter(()=>['all','unclassified'].includes(purpose)).map(value => <article className="sim-worldline" key={value.id}><span className="sim-worldline-icon"><GitBranch size={22}/></span><div>
+          {experienceAvailable&&<span className="eyebrow">既有未分类</span>}<span className={`sim-library-status is-${value.status}`}>{simStatus[value.status] || value.status}</span><h2>{value.title}</h2>
           <p className="sim-worldline-start">{value.start_label}</p><p className="sim-worldline-summary">{value.latest_narration || '起点已保存，尚未开始演化。'}</p>
           <p className="sim-worldline-meta">第{value.cursor}步 · {value.calls}次请求 · 费用／预留 ¥{value.cost.toFixed(4)}</p></div><Button onClick={() => setParams({ session: value.id })}>打开世界线<ArrowRight size={16}/></Button></article>)}
     </section>}

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { EditorState } from "@tiptap/pm/state";
-import { useBlocker, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useBlocker, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Bold,
   Italic,
@@ -408,7 +408,7 @@ export function ContentEditor({
                 <Button variant="ghost" aria-label="查看内容历史" onClick={openHistory}><HistoryIcon size={16}/>内容历史</Button>
                 <Button variant="ghost" aria-label={focus?'退出专注模式':'专注模式'} onClick={()=>{setFocus(!focus);onFocusChange(!focus);}}><Maximize2 size={16}/>{focus?'退出专注':'专注模式'}</Button>
                 <Button variant="ghost" onClick={()=>{onResetTreeWidth();rightPanel.setWidth(360);}}>恢复默认栏宽</Button>
-                <Button variant="ghost" aria-label="从此处准备模拟" onClick={async()=>{if(!reading&&!(await persist()))return;navigate(`/worlds/${world}/simulate?setup=new&source=${initial.id}`)}}><Orbit size={16}/>从此处准备模拟</Button>
+                <Button variant="ghost" aria-label="从此处准备模拟" onClick={async()=>{if(!reading&&!(await persist()))return;navigate(`/worlds/${world}/simulate?series=modern-academy&source=${initial.id}`)}}><Orbit size={16}/>从此处准备模拟</Button>
               </div>
             </details>
             <Button variant="ghost" aria-label={context?'收起上下文':'打开上下文'} aria-expanded={context&&!focus} aria-controls="create-context" disabled={focus} title="上下文" onClick={()=>setContext(!context)}><PanelRightClose size={17}/></Button>
@@ -520,7 +520,8 @@ export function ContentEditor({
           {tab === "inspirations" && (
             <>
               <h2>相关灵感</h2>
-              <p className="context-hint">模拟灵感的捕捉与关联尚未开放。</p>
+              <p className="context-hint">模拟观察和手工想法可以保存为灵感，并在灵感页回到原事件。</p>
+              <Link className="text-link" to={`/worlds/${world}/inspirations?node=${initial.id}`}>打开相关灵感 →</Link>
             </>
           )}
         </aside>

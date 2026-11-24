@@ -13,6 +13,7 @@ import { DisplayImage } from '../objects/DisplayImages';
 import { EntityMark } from "../../components/EntityMark";
 import { creationApi, entityKinds, type Entity } from "./api";
 import { reviewApi, type CanonRecords } from "../review/api";
+import { relationshipPath } from "../explore/links";
 import { MaterialSources } from './MaterialSources';
 
 export function EntityContext({
@@ -217,6 +218,9 @@ export function EntityContext({
           >
             打开完整对象资料 →
           </Link>
+          {entity.status === "active" && !entity.merged_into && (
+            <Link className="text-link" to={relationshipPath(world, { focus: `entity:${entity.id}` })}>在关系图查看 →</Link>
+          )}
           <MaterialSources world={world} kind="entity" identity={entityId} editable={false}/>
 
           <Link className="text-link" to={`${objectLink(entityId)}?tab=sources`}>查看与关联手工资料来源 →</Link>

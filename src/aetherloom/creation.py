@@ -6,7 +6,7 @@ from uuid import uuid4
 from .worlds import WorldRepository
 from .creation_models import inspect_document
 from . import canon
-from .canon_management import CanonManagementMixin, initialize as initialize_management
+from .canon_management import CanonManagementMixin, initialize as initialize_management, initialize_map_connections
 
 
 class CreationError(Exception):
@@ -24,9 +24,11 @@ def encoded(value):
 
 def record(row):
     result = dict(row)
-    for key in ('document', 'metadata', 'aliases', 'sections', 'core', 'typed_value'):
+    for key in ('document', 'metadata', 'aliases', 'sections', 'core', 'typed_value', 'source', 'tags', 'linked_nodes', 'linked_entities'):
         if key in result:
             result[key] = json.loads(result[key]) if result[key] is not None else None
+    if 'map_connection' in result:
+        result['map_connection'] = bool(result['map_connection'])
     return result
 
 
@@ -73,6 +75,7 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             canon.initialize(conn)
             conn.commit()
             initialize_management(conn)
+            initialize_map_connections(conn)
             if not conn.execute('SELECT 1 FROM schema_migrations WHERE version=5').fetchone():
                 conn.execute('BEGIN IMMEDIATE')
                 conn.execute('''CREATE TABLE extraction_failures (
@@ -90,6 +93,24 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             conn.commit()
             from .material_sources import initialize as initialize_sources
             initialize_sources(conn)
+            conn.execute('''CREATE TABLE IF NOT EXISTS inspirations (
+                id TEXT PRIMARY KEY, world_id TEXT NOT NULL REFERENCES worlds(id),
+                title TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+                origin TEXT NOT NULL CHECK(origin IN ('manual','simulation')),
+                source TEXT NOT NULL DEFAULT '{}',
+                tags TEXT NOT NULL DEFAULT '[]',
+                linked_nodes TEXT NOT NULL DEFAULT '[]',
+                linked_entities TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived')),
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )''')
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(inspirations)')}
+            if 'tags' not in columns:
+                conn.execute("ALTER TABLE inspirations ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+            conn.execute('CREATE INDEX IF NOT EXISTS inspirations_world_status ON inspirations(world_id,status,updated_at)')
+            conn.execute('INSERT OR IGNORE INTO schema_migrations VALUES(7,CURRENT_TIMESTAMP)')
+            conn.commit()
 
     def required(self, conn, table, identity):
         row = conn.execute(f'SELECT * FROM {table} WHERE id = ?', (identity,)).fetchone()
@@ -328,3 +349,150 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
                 (n.title LIKE ? ESCAPE '\\' OR n.plain_text LIKE ? ESCAPE '\\') LIMIT 100''', (world_id,pattern,pattern))]
             entities = [record(r) for r in conn.execute("SELECT * FROM entities WHERE world_id=? AND status='active' AND (name LIKE ? ESCAPE '\\' OR aliases LIKE ? ESCAPE '\\') LIMIT 100", (world_id,pattern,pattern))]
             return {'nodes': nodes, 'entities': entities}
+
+    def _validate_inspiration_links(self, conn, world_id, linked_nodes, linked_entities):
+        if len(set(linked_nodes)) != len(linked_nodes) or len(set(linked_entities)) != len(linked_entities):
+            raise CreationError('灵感关联不能重复。')
+        if linked_nodes:
+            marks = ','.join('?' for _ in linked_nodes)
+            rows = conn.execute(f'''SELECT n.id FROM nodes n JOIN works w ON w.id=n.work_id
+                WHERE n.id IN ({marks}) AND w.world_id=?''', (*linked_nodes, world_id)).fetchall()
+            if {row[0] for row in rows} != set(linked_nodes):
+                raise CreationError('灵感关联的资料不属于当前世界。', 404)
+        if linked_entities:
+            marks = ','.join('?' for _ in linked_entities)
+            rows = conn.execute(f'SELECT id FROM entities WHERE id IN ({marks}) AND world_id=?', (*linked_entities, world_id)).fetchall()
+            if {row[0] for row in rows} != set(linked_entities):
+                raise CreationError('灵感关联的对象不属于当前世界。', 404)
+
+    def _normalize_inspiration_tags(self, tags):
+        if not isinstance(tags, list) or len(tags) > 20:
+            raise CreationError('灵感标签格式不正确。')
+        values = []
+        for value in tags:
+            if not isinstance(value, str):
+                raise CreationError('灵感标签格式不正确。')
+            value = value.strip()
+            if not value or len(value) > 40:
+                raise CreationError('灵感标签格式不正确。')
+            if value not in values:
+                values.append(value)
+        return values
+
+    def _inspiration(self, conn, identity):
+        item = self.required(conn, 'inspirations', identity)
+        node_ids = item.get('linked_nodes', [])
+        entity_ids = item.get('linked_entities', [])
+        item['linked_node_ids'] = node_ids
+        item['linked_entity_ids'] = entity_ids
+        item['tags'] = item.get('tags', [])
+        item['linked_nodes'] = [dict(row) for row in conn.execute('''SELECT n.id,n.title,n.work_id,w.title AS work_title,n.version,n.status
+            FROM nodes n JOIN works w ON w.id=n.work_id WHERE n.id IN (%s) ORDER BY n.title,n.id''' %
+            (','.join('?' for _ in node_ids) or "''"), tuple(node_ids))] if node_ids else []
+        item['linked_entities'] = [dict(row) for row in conn.execute('''SELECT id,name,kind,version,status
+            FROM entities WHERE id IN (%s) ORDER BY name,id''' %
+            (','.join('?' for _ in entity_ids) or "''"), tuple(entity_ids))] if entity_ids else []
+        return item
+
+    def create_inspiration(self, world_id, data, *, origin='manual', source=None):
+        if origin not in ('manual', 'simulation'):
+            raise CreationError('灵感来源类型无效。')
+        source = dict(source or {})
+        if source and source.get('world_id') not in (None, world_id):
+            raise CreationError('灵感来源不属于当前世界。', 404)
+        linked_nodes = list(data.get('linked_nodes', []))
+        linked_entities = list(data.get('linked_entities', []))
+        tags = self._normalize_inspiration_tags(data.get('tags', []))
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            self.writable_world(conn, world_id)
+            self._validate_inspiration_links(conn, world_id, linked_nodes, linked_entities)
+            identity, timestamp = str(uuid4()), now()
+            conn.execute('''INSERT INTO inspirations(id,world_id,title,note,origin,source,tags,linked_nodes,linked_entities,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (identity, world_id, data['title'], data.get('note',''), origin,
+                encoded(source), encoded(tags), encoded(linked_nodes), encoded(linked_entities), timestamp, timestamp))
+            return self._inspiration(conn, identity)
+
+    def list_inspirations(self, world_id, *, query='', origin=None, status='active', node_id=None,
+                          worldline_id=None, character_id=None, location_id=None, tag=None, offset=0, limit=30):
+        self.get(world_id)
+        if status not in ('active', 'archived', 'all'):
+            raise CreationError('灵感状态无效。')
+        with self.connection() as conn:
+            where = ['world_id=?']
+            args = [world_id]
+            if status != 'all':
+                where.append('status=?'); args.append(status)
+            if origin:
+                if origin not in ('manual','simulation'): raise CreationError('灵感来源类型无效。')
+                where.append('origin=?'); args.append(origin)
+            if query.strip():
+                where.append('(title LIKE ? ESCAPE \'\\\' OR note LIKE ? ESCAPE \'\\\')')
+                pattern = '%' + query.replace('\\','\\\\').replace('%','\\%').replace('_','\\_') + '%'
+                args.extend([pattern, pattern])
+            if node_id:
+                where.append("EXISTS (SELECT 1 FROM json_each(linked_nodes) WHERE value=?)"); args.append(node_id)
+            if worldline_id:
+                where.append("json_extract(source,'$.worldline_id')=?"); args.append(worldline_id)
+            if character_id:
+                where.append("(json_extract(source,'$.actor_id')=? OR EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(source,'$.events'),'[]')) WHERE json_extract(value,'$.actor_id')=?))")
+                args.extend([character_id, character_id])
+            if location_id:
+                where.append("(json_extract(source,'$.location_id')=? OR EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(source,'$.events'),'[]')) WHERE json_extract(value,'$.location_id')=?))")
+                args.extend([location_id, location_id])
+            if tag:
+                where.append("EXISTS (SELECT 1 FROM json_each(tags) WHERE value=?)"); args.append(tag)
+            clause = ' AND '.join(where)
+            total = conn.execute('SELECT count(*) FROM inspirations WHERE ' + clause, args).fetchone()[0]
+            rows = conn.execute('SELECT id FROM inspirations WHERE ' + clause + ' ORDER BY updated_at DESC,id LIMIT ? OFFSET ?', (*args, limit, offset)).fetchall()
+            facets = self._inspiration_facets(conn, world_id, status)
+            return dict(items=[self._inspiration(conn, row[0]) for row in rows], total=total, offset=offset, limit=limit, facets=facets)
+
+    def _inspiration_facets(self, conn, world_id, status='active'):
+        args = [world_id]
+        clause = 'world_id=?'
+        if status != 'all':
+            clause += ' AND status=?'; args.append(status)
+        maps = {key: {} for key in ('worldlines', 'characters', 'locations', 'tags')}
+        rows = conn.execute('SELECT source,tags FROM inspirations WHERE ' + clause, args).fetchall()
+        for row in rows:
+            source = json.loads(row['source'] or '{}')
+            tags = json.loads(row['tags'] or '[]')
+            events = source.get('events') or [source]
+            seen = {key: set() for key in maps}
+            for event in events:
+                for group, value_key, label_key in (
+                    ('worldlines', 'worldline_id', 'worldline_id'),
+                    ('characters', 'actor_id', 'actor_name'),
+                    ('locations', 'location_id', 'location_name'),
+                ):
+                    value = event.get(value_key)
+                    if value and value not in seen[group]:
+                        item = maps[group].setdefault(value, {'value': value, 'label': event.get(label_key) or value, 'count': 0})
+                        item['count'] += 1
+                        seen[group].add(value)
+            for value in tags:
+                if value not in seen['tags']:
+                    item = maps['tags'].setdefault(value, {'value': value, 'label': value, 'count': 0})
+                    item['count'] += 1
+                    seen['tags'].add(value)
+        return {key: sorted(values.values(), key=lambda item: (-item['count'], item['label'])) for key, values in maps.items()}
+
+    def get_inspiration(self, identity):
+        with self.connection() as conn:
+            return self._inspiration(conn, identity)
+
+    def update_inspiration(self, identity, data):
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            item = self.required(conn, 'inspirations', identity)
+            self.writable_world(conn, item['world_id'])
+            self.expected(item, data.pop('version'))
+            values = dict(title=item['title'], note=item['note'], status=item['status'], tags=item.get('tags', []),
+                linked_nodes=item.get('linked_nodes', []), linked_entities=item.get('linked_entities', []))
+            values.update({key: value for key, value in data.items() if value is not None})
+            values['tags'] = self._normalize_inspiration_tags(values['tags'])
+            self._validate_inspiration_links(conn, item['world_id'], values['linked_nodes'], values['linked_entities'])
+            conn.execute('''UPDATE inspirations SET title=?,note=?,tags=?,linked_nodes=?,linked_entities=?,status=?,version=version+1,updated_at=? WHERE id=?''',
+                (values['title'], values['note'], encoded(values['tags']), encoded(values['linked_nodes']), encoded(values['linked_entities']), values['status'], now(), identity))
+            return self._inspiration(conn, identity)

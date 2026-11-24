@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
-import { ArrowLeft, ArrowRight, CalendarRange, Crosshair, Maximize2, Minus, Network, Plus, ScrollText, Link2, BookOpen } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CalendarRange, Crosshair, Maximize2, Minus, Network, Plus, ScrollText, Link2, BookOpen, Map as MapIcon } from 'lucide-react';
 import { Button } from '../../components/ui';
-import { period, timeLayerNames, type TimelinePage, type TimelineRecord, type YearRange } from './api';
+import { period, recordMapFocus, timeLayerNames, type TimelinePage, type TimelineRecord, type YearRange } from './api';
 import { fitYears, ticks, timeLanes, validTimeViewport, zoomYears, type TimeViewport } from './timelineModel';
 
-export function TimelineCanvas({ placed, unplaced, loading, range, selected, cursor, onCursor, onSelect, onGraph, onPage, context, restore, initialViewport, initialScroll, onSnapshot }: {
+export function TimelineCanvas({ placed, unplaced, loading, range, selected, cursor, onCursor, onSelect, onGraph, onMap, onPage, context, restore, initialViewport, initialScroll, onSnapshot }: {
   placed?: TimelinePage; unplaced?: TimelinePage; loading: boolean; range: YearRange; selected?: string; cursor?: number;
-  onCursor: (year: number) => void; onSelect: (record: TimelineRecord) => void; onGraph: (record?: TimelineRecord) => void;
+  onCursor: (year: number) => void; onSelect: (record: TimelineRecord) => void; onGraph: (record?: TimelineRecord) => void; onMap: (location: string, record: string) => void;
   onPage: (section: 'placed' | 'unplaced', offset: number) => void; context: string; restore: number; initialViewport?: TimeViewport; initialScroll?: number;
   onSnapshot: (viewport: TimeViewport, scroll: number) => void;
 }) {
@@ -35,6 +35,7 @@ export function TimelineCanvas({ placed, unplaced, loading, range, selected, cur
   const hasYears = !!placed && (placed.bounds.start !== null || placed.bounds.end !== null || range.start !== undefined || range.end !== undefined);
   const yearTicks = hasYears ? ticks(view, width) : [];
   const currentRecord = [...(placed?.items || []), ...(unplaced?.items || [])].find(r => r.key === selected);
+  const mapFocus = currentRecord && recordMapFocus(currentRecord, currentRecord.objects, placed?.focus);
   useEffect(() => {
     if (loading || !selected || lastSelection.current === selected) return;
     lastSelection.current = selected;
@@ -104,7 +105,11 @@ export function TimelineCanvas({ placed, unplaced, loading, range, selected, cur
       {!!placed?.total && <PageControls page={placed} size={120} loading={loading} section="placed" onPage={onPage}/>}
       {!!unplaced?.total && <section className="timeline-unplaced"><header><h3>时间未定 <small>{unplaced.total} 条</small></h3><p>保留原始描述，不根据章节顺序或修改时间定位。</p></header>{unplaced.items.map(record => <button type="button" key={record.key} className={`timeline-unplaced-row ${selected === record.key ? 'is-selected' : ''}`} aria-pressed={selected === record.key} disabled={loading} onClick={() => onSelect(record)}><span><strong>{record.label}</strong><small>{record.lane_label} · {timeLayerNames[record.kind]}</small></span><span>{period(record)}{record.time.certainty === 'invalid' && <small className="year-error">起止年份倒置，需核对</small>}</span></button>)}<PageControls page={unplaced} size={40} loading={loading} section="unplaced" onPage={onPage}/></section>}
     </div>
-    <div className="timeline-selection"><span>{currentRecord ? <><Crosshair size={13}/>{currentRecord.label}</> : selected ? '所选记录不在此页或当前筛选范围，详情仍可查阅。' : cursor !== undefined ? <><CalendarRange size={13}/>{cursor} 年</> : '单击记录查看详情 · 拖动空白平移 · 选择刻度定位年份'}</span>{(currentRecord || cursor !== undefined) && <Button variant="ghost" disabled={loading} onClick={() => onGraph(currentRecord)}><Network size={13}/>查看相关关系</Button>}</div>
+    <div className="timeline-selection">
+      <span>{currentRecord ? <><Crosshair size={13}/>{currentRecord.label}</> : selected ? '所选记录不在此页或当前筛选范围，详情仍可查阅。' : cursor !== undefined ? <><CalendarRange size={13}/>{cursor} 年</> : '单击记录查看详情 · 拖动空白平移 · 选择刻度定位年份'}</span>
+      {(currentRecord || cursor !== undefined) && <Button variant="ghost" disabled={loading} onClick={() => onGraph(currentRecord)}><Network size={13}/>查看相关关系</Button>}
+      {currentRecord && mapFocus && <Button variant="ghost" disabled={loading} onClick={() => onMap(mapFocus, currentRecord.key)}><MapIcon size={13}/>查看地图</Button>}
+    </div>
   </div>;
 }
 function PageControls({ page, size, loading, section, onPage }: { page: TimelinePage; size: number; loading: boolean; section: 'placed' | 'unplaced'; onPage: (section: 'placed' | 'unplaced', offset: number) => void }) {

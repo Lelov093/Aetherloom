@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Literal
 from .creation import CreationError
-from .creation_models import WorkCreate, WorkPatch, NodeCreate, NodePatch, EntityCreate, EntityPatch, MaterialCategory
+from .creation_models import WorkCreate, WorkPatch, NodeCreate, NodePatch, EntityCreate, EntityPatch, MaterialCategory, InspirationCreate, InspirationPatch
 from .object_schema import FactInput,FactEdit,RecordStatus,EventInput,EventEdit,RelationshipInput,RelationshipEdit,FieldDefinition,MergeInput
 
 router = APIRouter(prefix='/api')
@@ -169,3 +169,34 @@ def merge_entity(identity: str,body: MergeInput,request: Request):
 @router.get('/worlds/{world_id}/search')
 def search(world_id: str, request: Request, q: str = Query(min_length=1, max_length=200)):
     return repository(request).search(world_id, q)
+
+
+@router.get('/worlds/{world_id}/inspirations')
+def inspirations(world_id: str, request: Request, q: str = Query('', max_length=200),
+                 origin: Literal['manual', 'simulation'] | None = None,
+                 status: Literal['active', 'archived', 'all'] = 'active',
+                 node_id: str | None = None, worldline_id: str | None = None,
+                 character_id: str | None = None, location_id: str | None = None,
+                 tag: str | None = Query(None, max_length=40), offset: int = Query(0, ge=0),
+                 limit: int = Query(30, ge=1, le=100)):
+    return repository(request).list_inspirations(world_id, query=q, origin=origin, status=status,
+        node_id=node_id, worldline_id=worldline_id, character_id=character_id,
+        location_id=location_id, tag=tag, offset=offset, limit=limit)
+
+
+@router.post('/worlds/{world_id}/inspirations', status_code=201)
+def create_inspiration(world_id: str, body: InspirationCreate, request: Request):
+    return repository(request).create_inspiration(world_id, body.model_dump(), origin='manual')
+
+
+@router.get('/inspirations/{identity}')
+def inspiration(identity: str, request: Request):
+    return repository(request).get_inspiration(identity)
+
+
+@router.patch('/inspirations/{identity}')
+def update_inspiration(identity: str, body: InspirationPatch, request: Request):
+    data = body.model_dump(exclude_unset=True)
+    if any(value is None for key, value in data.items() if key != 'version'):
+        raise HTTPException(422, '修改字段不能为空。')
+    return repository(request).update_inspiration(identity, data)

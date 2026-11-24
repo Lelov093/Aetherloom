@@ -1,0 +1,62 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://prop.tscn" id="1"]
+[ext_resource type="PackedScene" path="res://building.tscn" id="2"]
+
+[node name="Contents" type="Node2D"]
+y_sort_enabled = true
+
+[node name="Academy1" parent="." instance=ExtResource("2")]
+kind = "academy"
+room_position = Vector2(10, 2)
+footprint = Vector2(9, 4)
+
+[node name="Bed2" parent="." instance=ExtResource("1")]
+kind = "bed"
+room_position = Vector2(3, 8)
+footprint = Vector2(3, 5)
+
+[node name="Tree3" parent="." instance=ExtResource("1")]
+kind = "tree"
+room_position = Vector2(3, 7.5)
+footprint = Vector2(1.5, 1.5)
+
+[node name="Flowers4" parent="." instance=ExtResource("1")]
+kind = "flowers"
+room_position = Vector2(3, 10)
+footprint = Vector2(1.5, 1)
+
+[node name="Bench5" parent="." instance=ExtResource("1")]
+kind = "bench"
+room_position = Vector2(3, 12.2)
+footprint = Vector2(2.5, 0.9)
+
+[node name="Bed6" parent="." instance=ExtResource("1")]
+kind = "bed"
+room_position = Vector2(17, 8)
+footprint = Vector2(3, 5)
+
+[node name="Tree7" parent="." instance=ExtResource("1")]
+kind = "tree"
+room_position = Vector2(17, 7.5)
+footprint = Vector2(1.5, 1.5)
+
+[node name="Flowers8" parent="." instance=ExtResource("1")]
+kind = "flowers"
+room_position = Vector2(17, 10)
+footprint = Vector2(1.5, 1)
+
+[node name="Bench9" parent="." instance=ExtResource("1")]
+kind = "bench"
+room_position = Vector2(17, 12.2)
+footprint = Vector2(2.5, 0.9)
+
+[node name="Notice10" parent="." instance=ExtResource("1")]
+kind = "notice"
+room_position = Vector2(5, 6.5)
+footprint = Vector2(1.8, 0.6)
+
+[node name="Lamp11" parent="." instance=ExtResource("1")]
+kind = "lamp"
+room_position = Vector2(18.5, 13)
+footprint = Vector2(0.6, 0.6)

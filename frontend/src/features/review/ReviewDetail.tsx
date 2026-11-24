@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeftRight,
   Clock3,
@@ -14,6 +14,7 @@ import { entityKinds, type Entity } from "../creation/api";
 import { EntityMark } from "../../components/EntityMark";
 import { useWorkspaceTrail } from "../../components/WorkspaceContext";
 import { Portrait, usePortraits } from "../objects/Portrait";
+import { relationshipPath } from "../explore/links";
 import { CanonSources } from "./CanonSources";
 import { CandidateEditor } from "./CandidateEditor";
 import {
@@ -46,6 +47,8 @@ export function ReviewDetail({
   active?: boolean;
 }) {
   const { portraits } = usePortraits(world);
+  const navigate = useNavigate();
+  const fromExplore = useLocation().state?.exploreWorld === world;
   const c = preview.candidate,
     p = c.payload;
   const [editing, setEditing] = useState(false),
@@ -87,6 +90,13 @@ export function ReviewDetail({
   const subject = entities.find(
     (e) => e.id === p.subject_ref || e.id === referencedCandidate?.target_id,
   );
+  const canonTarget = c.target_type && c.target_id && ["accepted", "merged"].includes(c.status)
+    ? `${c.target_type}:${c.target_id}`
+    : undefined;
+  const targetEntity = c.target_type === "entity" && entities.find(e => e.id === c.target_id);
+  const activeTarget = (targetEntity && targetEntity.status === "active" && !targetEntity.merged_into)
+    || (c.target_type === "event" && preview.current.some(record => record.id === c.target_id));
+  const canonFocus = activeTarget ? canonTarget : subject?.status === "active" && !subject.merged_into ? `entity:${subject.id}` : undefined;
   const title = p.subject_ref
     ? `${refName(p.subject_ref)} · ${proposalTitle(p)}`
     : proposalTitle(p);
@@ -129,6 +139,8 @@ export function ReviewDetail({
           <p className="review-notice">
             此项已{statusNames[c.status]?.replace("已", "")}
             。裁决记录与原始来源保留；编辑正文不会覆盖已确认事实。
+            {fromExplore ? <Button variant="ghost" onClick={() => navigate(-1)}>返回探索</Button>
+              : canonTarget && <Link className="text-link" to={relationshipPath(world, { focus: canonFocus, record: canonTarget })}>在关系图查看正式记录 →</Link>}
           </p>
         )}
         <div className="canon-comparison">

@@ -1,8 +1,11 @@
-const { app, BrowserWindow, dialog, session, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, dialog, session, Tray, Menu, nativeImage, ipcMain } = require('electron');
+const { randomBytes } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { existsSync, mkdirSync, openSync, closeSync } = require('node:fs');
+const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
+const { ViewerPreferences } = require('./viewer-preferences.cjs');
 
 const root = path.resolve(__dirname, '../..');
 let service;
@@ -48,10 +51,13 @@ async function start() {
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
   serviceOrigin = origin;
+  const vnextEnabled = process.env.AETHERLOOM_VNEXT_ENABLED === '1';
+  const hostSecret = randomBytes(32).toString('hex');
   mkdirSync(path.join(root, '.logs'), { recursive: true });
   const log = openSync(path.join(root, '.logs', 'desktop-service.log'), 'a');
   service = spawn(python, ['-m', 'uvicorn', 'aetherloom.api:app', '--host', '127.0.0.1', '--port', String(port)], {
-    cwd: root, env: { ...process.env, PYTHONUNBUFFERED: '1' }, stdio: ['ignore', log, log], windowsHide: true,
+    cwd: root, env: { ...process.env, PYTHONUNBUFFERED: '1',
+      AETHERLOOM_VNEXT_HOST_ORIGIN: origin, AETHERLOOM_VNEXT_HOST_SECRET: hostSecret }, stdio: ['ignore', log, log], windowsHide: true,
   });
   closeSync(log);
   let failure;
@@ -75,9 +81,86 @@ async function start() {
   if (!ready) throw new Error('本地服务未能及时启动。请查看 .logs/desktop-service.log。');
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   const win = new BrowserWindow({
-    title: 'Aetherloom', width: 1440, height: 940, minWidth: 820, minHeight: 640,
+    title: `Aetherloom ${app.getVersion()} · 世界工作室`, width: 1440, height: 940, minWidth: 820, minHeight: 640,
     backgroundColor: '#F7F8F6', show: false, autoHideMenuBar: true,
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') },
+  });
+  win.on('page-title-updated', event => event.preventDefault());
+  let activeSession, activeIdentity;
+  const viewerPreferences = new ViewerPreferences(app.getPath('userData'));
+  const exploreViewDirectory = path.join(app.getPath('userData'), 'explore-views');
+  let exploreViewQueue = Promise.resolve();
+  ipcMain.handle('explore:saved-views', (event, { world, value } = {}) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame ||
+        new URL(event.senderFrame.url).origin !== origin ||
+        typeof world !== 'string' || !/^[a-z0-9-]{1,120}$/i.test(world)) throw new Error('Untrusted Explore caller');
+    const file = path.join(exploreViewDirectory, world + '.json');
+    const operation = exploreViewQueue.catch(() => {}).then(async () => {
+      if (value === undefined) {
+        try { return JSON.parse(await fs.readFile(file, 'utf8')); }
+        catch (error) {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        }
+      }
+      const encoded = JSON.stringify(value);
+      if (!Array.isArray(value) || value.length > 20 || Buffer.byteLength(encoded) > 512 * 1024) {
+        throw new Error('Invalid Explore views');
+      }
+      await fs.mkdir(exploreViewDirectory, { recursive: true });
+      await fs.writeFile(file + '.tmp', encoded, 'utf8');
+      await fs.rename(file + '.tmp', file);
+    });
+    exploreViewQueue = operation;
+    return operation;
+  });
+  let sessionQueue = Promise.resolve();
+  ipcMain.handle('runtime:session', (event, { world, role, worldline, actor } = {}) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame ||
+        new URL(event.senderFrame.url).origin !== origin) throw new Error('Untrusted runtime caller');
+    if (!vnextEnabled) return null;
+    if (typeof world !== 'string' || !world || !['creator_observer', 'observer', 'participant'].includes(role)) throw new Error('Invalid scope');
+    if (role === 'participant' && (process.env.AETHERLOOM_VNEXT_INTERACTIVE !== '1' || typeof worldline !== 'string' || typeof actor !== 'string')) throw new Error('Invalid participant binding');
+    sessionQueue = sessionQueue.catch(() => {}).then(async () => {
+      if (activeSession) {
+        const closed = await fetch(`${origin}/api/v2/session`, { method: 'DELETE', headers: { Authorization: `Bearer ${activeSession}` } });
+        if (!closed.ok) throw new Error('Could not replace runtime session');
+        activeSession = undefined;
+          activeIdentity = undefined;
+      }
+      const response = await fetch(`${origin}/api/v2/session`, { method: 'POST', headers: {
+        'Content-Type': 'application/json', 'X-Aetherloom-Host': hostSecret,
+      }, body: JSON.stringify({ world_id: world, role, ...(role === 'participant' ? {worldline_id:worldline,actor_id:actor} : {}) }) });
+      if (!response.ok) throw new Error('Runtime session unavailable');
+      const result = await response.json();
+      activeSession = result.token;
+      activeIdentity = {world,role,actor};
+      return result;
+    });
+    return sessionQueue;
+  });
+  ipcMain.handle('runtime:available', event => event.sender === win.webContents &&
+    event.senderFrame === win.webContents.mainFrame && new URL(event.senderFrame.url).origin === origin && vnextEnabled);
+  ipcMain.handle('runtime:experiments', event => ({godotLibrary:
+    event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame &&
+    new URL(event.senderFrame.url).origin === origin && vnextEnabled && process.env.AETHERLOOM_GODOT_LIBRARY_POC === '1'}));
+  ipcMain.handle('runtime:viewer-layout', async(event, {worldline, value, view} = {}) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame ||
+        new URL(event.senderFrame.url).origin !== origin || !activeSession || !vnextEnabled ||
+        typeof worldline !== 'string' || worldline.length > 120 ||
+        (view !== undefined && !/^godot:(courtyard|classroom|library|street)$/.test(view))) throw new Error('Untrusted viewer caller');
+    const token=activeSession, identity=activeIdentity;
+    const response=await fetch(`${origin}/api/v2/worldlines/${encodeURIComponent(worldline)}/snapshot`,
+      {headers:{Authorization:`Bearer ${token}`}});
+    if (!response.ok || token !== activeSession) throw new Error('Viewer scope expired');
+    const {projection:p}=await response.json();
+    if (token !== activeSession) throw new Error('Viewer scope expired');
+    if (view && !(view.slice(6) in p.world.place_topology)) throw new Error('Scene not visible');
+    const key=JSON.stringify([identity.world,worldline,identity.role,identity.actor || null,p.policy_version,...(view ? [view] : [])]);
+    const layout=await viewerPreferences.operation(key,value);
+    if (token !== activeSession) throw new Error('Viewer scope expired');
+    const visible=new Set([...Object.keys(p.world.place_topology),...Object.values(p.world.place_topology).flat()]);
+    return layout ? {...layout,places:layout.places.filter(place=>visible.has(place.id))} : null;
   });
   // A small native bitmap avoids a new asset/dependency for the persistent tray entry.
   const pixels = Buffer.alloc(24*24*4);

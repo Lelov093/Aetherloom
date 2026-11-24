@@ -24,6 +24,13 @@ from aetherloom.simulation_api import router as simulation_router
 from aetherloom.portraits import router as portrait_router, initialize as initialize_portraits
 from aetherloom.explore import router as explore_router
 from aetherloom.timeline import router as timeline_router
+from aetherloom.runtime.service import RuntimeOptions, RuntimeService
+from aetherloom.runtime.routing import WorldlineRouter
+from aetherloom.runtime.projection import ProjectionHost
+from aetherloom.runtime.transport import router_for
+from aetherloom.runtime.domain import RuntimeFault
+from aetherloom.runtime.worker import RuntimeWorker
+from aetherloom.runtime.model_provider import configured_policy
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,22 +64,52 @@ class WorldRead(WorldCreate):
     version: int
 
 
-def create_app(db_path: Path | None = None, provider=None):
+def create_app(db_path: Path | None = None, provider=None, *, runtime_options: RuntimeOptions | None = None,
+               host_origin: str | None = None, host_secret: str | None = None):
+    options = runtime_options or RuntimeOptions.from_env()
+    origin = host_origin or os.environ.get('AETHERLOOM_VNEXT_HOST_ORIGIN')
+    secret = host_secret or os.environ.get('AETHERLOOM_VNEXT_HOST_SECRET')
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         path = db_path or Path(os.environ.get("AETHERLOOM_DB", ROOT / ".data/aetherloom.db"))
+        app.state.vnext = RuntimeService(options, legacy_database=path)
+        app.state.projection = ProjectionHost(app.state.vnext)
         app.state.worlds = WorldRepository(path)
         app.state.creation = ReviewRepository(path)
         initialize_portraits(app.state.creation)
         app.state.extraction = ExtractionService(app.state.creation, provider or CompatibleProvider(ProviderSettings.load(ROOT)))
         app.state.simulation = SimulationService(path)
+        app.state.worldline_router = (WorldlineRouter(app.state.simulation.repo, app.state.vnext)
+            if app.state.vnext.options.enabled and app.state.vnext.options.layout == 'shared' else None)
+        app.state.runtime_worker = RuntimeWorker(app.state.vnext, excluded=app.state.projection.bound_participants)
+        app.state.vnext.model_policy = configured_policy(app.state.vnext, ProviderSettings.load(ROOT), app.state.projection.bound_participants)
+        app.state.runtime_worker.start()
         try:
             yield
         finally:
+            await app.state.runtime_worker.shutdown()
+            app.state.projection.close()
+            app.state.vnext.shutdown()
             await app.state.simulation.shutdown()
             await app.state.extraction.shutdown()
 
     app = FastAPI(title="Aetherloom", lifespan=lifespan)
+    if options.enabled and origin and secret:
+        app.include_router(router_for(origin, secret, interactive=options.interactive))
+
+    @app.middleware('http')
+    async def private_runtime_responses(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith('/api/v2/'):
+            response.headers['Cache-Control'] = 'no-store'
+            response.headers['Vary'] = 'Authorization, Origin'
+        return response
+
+    @app.exception_handler(RuntimeFault)
+    async def runtime_error(request, error):
+        code = str(error)
+        status = 401 if code in ('session_expired', 'unauthorized') else 403 if code in ('scope_mismatch', 'principal_not_enabled') else 409
+        return JSONResponse({'detail': code}, status_code=status)
     app.include_router(creation_router)
     app.include_router(import_router)
     app.include_router(review_router)

@@ -10,7 +10,7 @@ from .story_year import register, timing, validate_range
 
 router = APIRouter(prefix='/api/worlds/{world}/explore')
 LAYERS = ('event', 'relationship', 'assertion')
-RECORDS = """WITH records AS (
+RECORDS = """WITH focused_entities AS (SELECT value AS id FROM json_each(:focus_entities)), records AS (
  SELECT 'event' AS kind,e.id,e.title AS label,'' AS value,
  e.valid_from,e.valid_until,e.version,'events:'||coalesce(e.location_id,'world') AS lane_key,
  coalesce((SELECT name FROM entities WHERE id=e.location_id),'世界事件') AS lane_label,
@@ -32,13 +32,28 @@ RECORDS = """WITH records AS (
 ), scoped AS (
  SELECT *,story_match(valid_from,valid_until,:lower,:upper) AS match FROM records r
  WHERE kind IN (SELECT value FROM json_each(:layers))
- AND (:focus='' OR (:focus_kind='entity' AND (
- subject_id=:focus_id OR object_id=:focus_id OR location_id=:focus_id
- OR (kind='event' AND EXISTS(SELECT 1 FROM event_participants p WHERE p.event_id=r.id AND p.entity_id=:focus_id))))
+ AND (:focus_kind='' OR (:focus_kind IN ('entity','relationship') AND (
+ subject_id IN (SELECT id FROM focused_entities)
+ OR object_id IN (SELECT id FROM focused_entities)
+ OR location_id IN (SELECT id FROM focused_entities)
+ OR (kind='event' AND EXISTS(SELECT 1 FROM event_participants p WHERE p.event_id=r.id AND p.entity_id IN (SELECT id FROM focused_entities)))))
  OR (:focus_kind='event' AND kind='event' AND id=:focus_id))
 ), matched AS (
  SELECT * FROM scoped WHERE match!='outside' AND (:uncertain OR match='dated')
 ) """
+
+
+def relationship_endpoints(repo, conn, world, identity):
+    state = repo.object_snapshot(conn, 'relationship', identity)
+    if state['world_id'] != world:
+        raise CreationError('找不到此世界的关系。', 404)
+    endpoints = {}
+    for entity_id in (state['subject_id'], state['object_id']):
+        entity = repo.canonical_entity(conn, entity_id, world)
+        key = f"entity:{entity['id']}"
+        endpoints[key] = dict(key=key, label=entity['name'], kind=entity['kind'],
+                              active=entity['status'] == 'active')
+    return list(endpoints.values())
 
 
 @router.get('/timeline')
@@ -46,7 +61,8 @@ def timeline(world: str, request: Request, focus: str = '', layers: str = ','.jo
              year_start: int | None = Query(None, ge=-999999, le=999999),
              year_end: int | None = Query(None, ge=-999999, le=999999),
              uncertain: bool = True, limit: int = Query(120, ge=1, le=240),
-             offset: int = Query(0, ge=0), section: str = 'placed', locate: str = ''):
+             offset: int = Query(0, ge=0), section: str = 'placed', locate: str = '',
+             relationship: str = ''):
     repo = request.app.state.creation
     repo.get(world)
     validate_range(year_start, year_end)
@@ -57,10 +73,21 @@ def timeline(world: str, request: Request, focus: str = '', layers: str = ','.jo
         conn.execute('BEGIN')
         register(conn)
         requested = focus
-        if focus:
-            focus = resolve(repo, conn, world, focus)
-        kind, _, identity = focus.partition(':')
-        params = dict(world=world, focus=focus, focus_kind=kind, focus_id=identity,
+        relationship_scope = None
+        if relationship:
+            endpoints = relationship_endpoints(repo, conn, world, relationship)
+            relationship_scope = dict(id=relationship, endpoints=endpoints)
+            active_keys = [endpoint['key'] for endpoint in endpoints if endpoint['active']]
+            focus = focus if focus in active_keys else next(iter(active_keys), '')
+            requested = focus
+            kind, identity = 'relationship', relationship
+            focus_entities = [key.split(':', 1)[1] for key in active_keys]
+        else:
+            if focus:
+                focus = resolve(repo, conn, world, focus)
+            kind, _, identity = focus.partition(':')
+            focus_entities = [identity] if kind == 'entity' else []
+        params = dict(world=world, focus_kind=kind, focus_id=identity, focus_entities=json.dumps(focus_entities),
                       layers=json.dumps(selected), lower=year_start, upper=year_end, uncertain=uncertain)
         counts = {r['match']: r['n'] for r in conn.execute(RECORDS+'SELECT match,count(*) AS n FROM scoped GROUP BY match', params)}
         totals = {key: counts.get(key, 0) for key in ('dated', 'partial', 'undated', 'invalid', 'outside')}
@@ -91,6 +118,7 @@ def timeline(world: str, request: Request, focus: str = '', layers: str = ','.jo
             result.append(value)
         return dict(focus=focus, requested_focus=requested,
                     focus_object=graph_node(repo, conn, world, focus, 0) if focus else None,
+                    relationship_scope=relationship_scope,
                     revision=canon.revision(conn, world), items=result, counts=totals,
                     bounds=dict(start=bounds[0], end=bounds[1]), total=total, offset=offset,
                     remaining=max(0, total-offset-len(result)), section=section)

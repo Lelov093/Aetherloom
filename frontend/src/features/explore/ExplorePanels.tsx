@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Poin
 import { X } from 'lucide-react';
 
 const bounds = { left: { min: 240, max: 380 }, right: { min: 290, max: 450 } };
-export function useExplorePanels() {
+export function useExplorePanels(initialDrawer?: 'left' | 'right') {
   const [preferences, setPreferences] = useState(() => {
     const initial = { left: 272, right: 330, leftOpen: true, rightOpen: true };
     try {
@@ -12,7 +12,7 @@ export function useExplorePanels() {
     } catch { /* Keep default display preferences. */ }
     return initial;
   });
-  const [width, setWidth] = useState(window.innerWidth), [drawer, setDrawer] = useState<'left' | 'right'>();
+  const [width, setWidth] = useState(window.innerWidth), [drawer, setDrawer] = useState(initialDrawer);
   const narrow = width < 1200;
   useEffect(() => {
     let wasNarrow = window.innerWidth < 1200;

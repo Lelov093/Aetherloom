@@ -81,9 +81,11 @@ class RelationshipInput(Model):
     valid_until: str | None = Field(default=None,max_length=160)
     strength: float | None = Field(default=None,ge=0,le=1)
     source_note: str = Field(default='人工世界编辑',max_length=500)
+    map_connection: StrictBool = False
 
 class RelationshipEdit(RelationshipInput):
     version: int = Field(ge=1)
+    map_connection: StrictBool | None = None
 
 class MergeInput(Model):
     target_id: str

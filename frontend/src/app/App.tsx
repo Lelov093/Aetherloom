@@ -37,9 +37,11 @@ import {reviewApi} from '../features/review/api';
 import { ActivityNotice, useReviewActivity } from '../features/review/ReviewActivity';
 import { CanonRecords } from "../features/review/CanonRecords";
 import { SourceReader } from '../features/creation/SourceReader';
+import { InspirationLibrary } from '../features/creation/InspirationLibrary';
 const SimulationWorkspace=lazy(()=>import('../features/simulation/SimulationWorkspace').then(m=>({default:m.SimulationWorkspace})));
 const SimulationReview=lazy(()=>import('../features/simulation/SimulationReview').then(m=>({default:m.SimulationReview})));
 const ExploreWorkspace=lazy(()=>import('../features/explore/ExploreWorkspace').then(m=>({default:m.ExploreWorkspace})));
+const RuntimeWorkspace=lazy(()=>import('../features/runtime/RuntimeWorkspace').then(m=>({default:m.RuntimeWorkspace})));
 import {
   WorkspaceContext,
   type ContextCrumb,
@@ -65,7 +67,7 @@ function Shell({
     <div
       className="application"
       data-create-editor={Boolean(world && location.pathname === `/worlds/${world.id}/create`)}
-      data-simulation-live={Boolean(world && location.pathname === `/worlds/${world.id}/simulate` && new URLSearchParams(location.search).has('session'))}
+      data-simulation-live={Boolean(world && [ `/worlds/${world.id}/simulate`, `/worlds/${world.id}/simulate/runtime` ].includes(location.pathname) && ['session','line'].some(key=>new URLSearchParams(location.search).has(key)))}
       data-workspace={
         location.pathname.includes("/review") ? "review" : location.pathname.includes('/explore') ? 'explore' : location.pathname.includes('/simulate') ? 'simulate' : "create"
       }
@@ -267,7 +269,7 @@ function Shell({
 function WorldRoute({
   view = "home",
 }: {
-  view?: "home" | "create" | "objects" | "entity" | "review" | "records" | "source" | 'simulate' | 'sim-review' | 'explore';
+  view?: "home" | "create" | "objects" | "entity" | "review" | "records" | "source" | 'simulate' | 'sim-review' | 'explore' | 'runtime' | 'inspirations';
 }) {
   const { id } = useParams();
   const [world, setWorld] = useState<World>();
@@ -300,7 +302,7 @@ function WorldRoute({
             返回世界库
           </Link>
         </main>
-      ) : world ? (
+      ) : world && view === 'runtime' ? <Suspense fallback={<p role="status">正在打开世界观察…</p>}><RuntimeWorkspace key={world.id} world={world.id}/></Suspense> : world ? (
         view === 'explore' ? <Suspense fallback={<main id="main-content" className="page loading-state" role="status">正在打开世界关系…</main>}><ExploreWorkspace key={world.id} world={world.id}/></Suspense> : view === 'simulate' ? <Suspense fallback={<p role="status">正在打开世界模拟…</p>}><SimulationWorkspace key={world.id} world={world.id}/></Suspense> : view === 'sim-review' ? <Suspense fallback={<p role="status">正在打开模拟审阅…</p>}><SimulationReview key={world.id} world={world.id}/></Suspense> : view === "source" ? (
           <SourceReader world={world.id}/>
         ) : view === "review" ? (
@@ -313,6 +315,8 @@ function WorldRoute({
           <WorldObjects key={world.id} world={world.id} />
         ) : view === "entity" ? (
           <EntityFullView key={world.id} world={world.id} />
+        ) : view === "inspirations" ? (
+          <InspirationLibrary key={world.id} world={world.id} />
         ) : (
           <WorldHome key={world.id} world={world} onUpdated={setWorld} />
         )
@@ -343,7 +347,9 @@ export function App() {
       <Route path="/worlds/:id/review" element={<WorldRoute view="review" />} />
       <Route path="/worlds/:id/review/simulation" element={<WorldRoute view="sim-review"/>}/>
       <Route path="/worlds/:id/simulate" element={<WorldRoute view="simulate"/>}/>
+      <Route path="/worlds/:id/simulate/runtime" element={<WorldRoute view="runtime"/>}/>
       <Route path="/worlds/:id/explore" element={<WorldRoute view="explore"/>}/>
+      <Route path="/worlds/:id/inspirations" element={<WorldRoute view="inspirations"/>}/>
       <Route
         path="/worlds/:id/create/records"
         element={<WorldRoute view="records" />}
