@@ -1,6 +1,8 @@
 # Aetherloom
 
-**0.7.0 · Windows 源码版**
+**0.7.1 · Windows 源码补丁版**
+
+本版更新 Electron 44.9.1、Vite 8.3.3 和 undici 7.30.1，修复 0.7.0 锁文件中报告的依赖安全问题。
 
 Aetherloom 是面向小说作者与世界构建创作者的本地桌面工作台。你可以整理正文、设定和大纲，建立人物、地点、事件与关系，再从一个明确的起点观察世界如何演化。整理、阅读、检索、关联资料和体验内置学院都可以在无模型配置的情况下开始。
 
@@ -32,6 +34,8 @@ Aetherloom 是面向小说作者与世界构建创作者的本地桌面工作台
 git clone https://github.com/Lelov093/Aetherloom.git
 Set-Location Aetherloom
 ```
+
+已有源码目录升级时，先从托盘选择「暂停保存并退出」。更新源码后在项目根目录运行 `npm --prefix frontend ci` 同步锁定的依赖，再使用原来的启动方式。
 
 ### 整理资料或使用原有文本模拟
 
