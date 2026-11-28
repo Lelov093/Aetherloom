@@ -5,12 +5,53 @@ from uuid import uuid4
 from aetherloom import canon
 from aetherloom.creation import CreationError, encoded, now
 from aetherloom.review_models import Decision, EventProposal, AssertionProposal
-from . import history
+from . import history, transcript
 from .domain import RuntimeFault
 
 
 def require(store):
     if not history.available(store): raise RuntimeFault('history_migration_required')
+
+
+def describe_ruling(event, names):
+    ruling = event['ruling']
+
+    def name(key):
+        return names.get(key, key)
+
+    if ruling['kind'] == 'attempt':
+        attempt = ruling['attempt']
+        action = attempt['action']
+        verb = {'move': '进入', 'take': '拾取', 'transfer': '转交'}[action['kind']]
+        target = name(action.get('destination_id') or action.get('item_id'))
+        intent = f'{name(attempt["actor_id"])}尝试{verb}「{target}」'
+        if action['kind'] == 'transfer':
+            intent += f'给{name(action["recipient_id"])}'
+        decision = '规则允许' if event['accepted'] else '规则拒绝'
+        if ruling['required_items']:
+            decision += '，进入须持有' + '、'.join(map(name, ruling['required_items']))
+        elif event['reason_code']:
+            decision += f'（{event["reason_code"]}）'
+        unchanged = f'{name(attempt["actor_id"])}仍在{name(ruling["location_id"])}' if action['kind'] == 'move' else '物品归属保持原状'
+    else:
+        detail = ruling['conflict']['detail']
+        intent = (f'{"、".join(name(claim["actor_id"]) for claim in detail["claims"])}同时尝试拾取「{name(detail["item_id"])}」'
+                  if detail['kind'] == 'item' else detail['description'])
+        decision = {'pending': '暂停等待作者', 'blocked': '规则拒绝', 'rules': '仅一位符合规则',
+                    'draw': '同条件抽签', 'chosen': '作者选定符合规则的参与者', 'cancelled': '作者搁置'}[ruling['result']]
+        if ruling['winner_id']:
+            decision += f'，由{name(ruling["winner_id"])}取得'
+        if ruling['draw_index'] is not None:
+            decision += f'（第 {ruling["draw_index"] + 1} 个抽签位）'
+        unchanged = f'物品仍在{name(detail["holder_id"])}' if detail['kind'] == 'item' else '待处理的后果未生效'
+
+    consequences = []
+    for effect in transcript.ruling_effects(event):
+        label = (f'{name(effect["entity_id"])}的位置' if effect['op'] == 'agent_location_set'
+                 else f'{name(effect["item_id"])}的归属')
+        consequences.append(f'{label} · {name(effect["before"])} → {name(effect["after"])}')
+    return '\n'.join([f'作者意图 · {intent}。{event["reason"]}', f'实际裁决 · {decision}',
+                      '后果 · ' + ('、'.join(consequences) if consequences else unchanged)])
 
 
 def evidence(store, conn, line, seq, *, require_accepted=True):
@@ -33,7 +74,8 @@ def evidence(store, conn, line, seq, *, require_accepted=True):
     args = event.get('command', {}).get('args', {})
     text = next((op['evidence']['text'] for op in event['effects'] if op['op'] == 'memory_append'), '')
     label = names.get(actor, actor) or '世界'
-    if not event['accepted']: text = f'{label}尝试{action}，被规则拒绝（{event.get("reason_code") or "条件未满足"}）；预期行动未成立。'
+    if event.get('ruling'): text = describe_ruling(event, names)
+    elif not event['accepted']: text = f'{label}尝试{action}，被规则拒绝（{event.get("reason_code") or "条件未满足"}）；预期行动未成立。'
     elif action == 'move': text = f"{label}从{names.get(before.agents[actor].location, before.agents[actor].location)}前往{names.get(after.agents[actor].location, after.agents[actor].location)}。"
     elif action == 'goal': text = f'{label}调整目标：{after.agents[actor].goal}'
     elif action in ('take', 'transfer'):
@@ -54,7 +96,8 @@ def evidence(store, conn, line, seq, *, require_accepted=True):
             for target,judgment in own.appraisals.items():
                 if judgment != prior.appraisals.get(target): text += f' 对{names.get(target,target)}的主观看法：{judgment.judgment}。'
     elif not text: text = f'{label} · {action} · {args}'
-    if event.get('kind') == 'creator_intervention': text = '【创作者干预】' + event.get('reason', '') + '；' + text
+    if event.get('kind') == 'creator_intervention' and not event.get('ruling'):
+        text = '【创作者干预】' + event.get('reason', '') + '；' + text
     return event, before, after, manifest, baseline, names, bindings, text
 
 

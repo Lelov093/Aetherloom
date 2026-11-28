@@ -15,6 +15,8 @@ export interface ObjectRef {
   context: string;
   to: string;
   work_id?: string;
+  category_paths?: string[];
+  excerpt?: string;
 }
 export interface ObjectPage {
   items: ObjectRef[];
@@ -44,6 +46,8 @@ export const catalogApi = {
       entity_kind?: string;
       work_id?: string;
       offset?: number;
+      include_preview?: boolean;
+      writing_only?: boolean;
     },
   ) => {
     const params = new URLSearchParams(

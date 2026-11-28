@@ -125,6 +125,9 @@
 .monitor-inspector-body details { font-size:12px; margin:18px 0; }
 .monitor-inspector-body summary { color:var(--text-secondary); cursor:pointer; line-height:1.7; }
 .monitor-inspector-body .button { font-size:12px; max-width:100%; }
+.monitor-inspector-body .runtime-origin-link {
+  color: var(--text-link); font-weight: 600; text-decoration: underline; text-underline-offset: 3px;
+}
 .inspector-note { font-size:11px; line-height:1.8; padding:10px 12px; background:var(--sky-50); border-radius:10px; color:var(--text-secondary); }
 .inspector-people { display:flex; flex-direction:column; gap:8px; }
 .inspector-people button { display:flex; align-items:center; gap:8px; border:0; background:transparent; font:inherit; font-size:12px; text-align:left; padding:6px; cursor:pointer; }

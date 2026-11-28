@@ -49,15 +49,15 @@ export function ActivityNotice({ world, activity, error, notice }: {
       <Bell size={18} /><span>{activity?.active ? `${activity.active} 项运行中` : '通知'}</span>
     </Button>
     {notice && dismissed !== notice.key && <aside className="activity-completion" role="status" aria-live="polite">
-      <span>{notice.text}</span><Link to={`/worlds/${world}/review`} onClick={() => setDismissed(notice.key)}>前往审阅 →</Link>
+      <span>{notice.text}</span><Link to={`/worlds/${world}/review/history`} onClick={() => setDismissed(notice.key)}>前往审阅 →</Link>
       <Button variant="ghost" aria-label="关闭任务通知" onClick={() => setDismissed(notice.key)}>关闭</Button>
     </aside>}
     {open && <Dialog title="通知与提取任务" onClose={() => setOpen(false)}>
       {error && <ErrorNotice>{error}</ErrorNotice>}
       {!activity && !error && <p role="status">正在读取任务状态…</p>}
       {activity && <>
-        <Link className="text-link" onClick={() => setOpen(false)} to={`/worlds/${world}/review`}>{activity.pending} 项待审阅 →</Link>
-        <Link className="text-link" onClick={()=>setOpen(false)} to={`/worlds/${world}/review/simulation`}>{activity.simulation_pending} 项模拟提案待审阅 →</Link>
+        <Link className="text-link" onClick={() => setOpen(false)} to={`/worlds/${world}/review/history`}>{activity.pending} 项待审阅 →</Link>
+        <Link className="text-link" onClick={()=>setOpen(false)} to={`/worlds/${world}/review/simulation`}>历史模拟提案 →</Link>
         <p className="context-hint">提取结果等待你的裁决；完成通知不会确认世界事实。</p>
         {activity.tasks.length ? <ul className="activity-tasks">{activity.tasks.map(task => <li key={task.id}>
           <strong>{task.title}</strong><span>{taskNames[task.status]} · {task.completed_chunks}/{task.total_chunks} 段</span>

@@ -18,8 +18,13 @@ export function Dialog({ title, children, onClose, busy = false, className = '',
     ref.current?.querySelector<HTMLElement>(focusFirstInput ? 'input, textarea' : '[aria-label="关闭对话框"]')?.focus();
     return () => { ref.current?.close(); previous?.focus(); };
   }, []);
-  return <dialog ref={ref} aria-labelledby={titleId} className={`dialog ${className}`} onCancel={e => { e.preventDefault(); if (!busy) onClose(); }} onKeyDown={event => {
-    if (event.key !== 'Tab') return;
+  return <dialog ref={ref} aria-labelledby={titleId} className={`dialog ${className}`} onCancel={e => {
+    if (e.target !== e.currentTarget) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!busy) onClose();
+  }} onKeyDown={event => {
+    if (event.key !== 'Tab' || (event.target as HTMLElement).closest('dialog') !== event.currentTarget) return;
     const targets = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex="0"]')]
       .filter(element => element.tabIndex >= 0 && element.getClientRects().length > 0 && (element.tagName === 'SUMMARY' || !element.closest('details:not([open])')) && (element.tagName === 'SELECT' || !element.closest('select')));
     if (event.shiftKey && document.activeElement === targets[0]) { event.preventDefault(); targets.at(-1)?.focus(); }

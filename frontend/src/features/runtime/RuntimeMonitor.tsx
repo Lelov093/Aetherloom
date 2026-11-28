@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useRef, useState, type ComponentProps, type ComponentType } from "react";
-import { useSearchParams } from "react-router-dom";
+import { lazy, Suspense, useEffect, useRef, useState, type ComponentType } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   Grid2X2,
@@ -12,7 +12,6 @@ import {
   FolderOpen,
   Eye,
   MessageCircle,
-  Footprints,
   Flag,
   Shield,
   Info,
@@ -20,81 +19,71 @@ import {
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
 import { MonitorFrame } from "../simulation/MonitorFrame";
 import { useMonitorLayout } from "../simulation/useMonitorLayout";
-const AcademyViewport = lazy(() =>
-  import("./AcademyViewport").then((m) => ({ default: m.AcademyViewport })),
-);
-type LibraryViewportProps = Pick<ComponentProps<typeof AcademyViewport>, "frame" | "actor" | "onActor" | "onExit">;
+type AcademyViewportProps = {
+  frame: Envelope;
+  place: string;
+  actor: string;
+  follow: boolean;
+  onActor: (id: string) => void;
+  onExit: (id: string) => void;
+};
+type LibraryViewportProps = Pick<AcademyViewportProps, "frame" | "actor" | "onActor" | "onExit">;
+type GodotAcademyViewportProps = AcademyViewportProps & {
+  assetVersion: string;
+  onText: () => void;
+  onCompatibility: () => void;
+};
+
+const loadAcademy = import.meta.glob<{ AcademyViewport: ComponentType<AcademyViewportProps> }>(
+  "./AcademyViewport.tsx",
+)["./AcademyViewport.tsx"];
+const AcademyViewport = loadAcademy
+  ? lazy(() => loadAcademy().then((m) => ({ default: m.AcademyViewport })))
+  : undefined;
 const loadGodotLibrary = import.meta.glob<{ GodotLibraryViewport: ComponentType<LibraryViewportProps> }>(
   "./GodotLibraryViewport.tsx",
 )["./GodotLibraryViewport.tsx"];
 const GodotLibraryViewport = loadGodotLibrary
   ? lazy(() => loadGodotLibrary().then((m) => ({ default: m.GodotLibraryViewport })))
   : undefined;
-const GodotAcademyViewport = lazy(() =>
-  import("./GodotAcademyViewport").then((m) => ({
-    default: m.GodotAcademyViewport,
-  })),
-);
+const loadGodotAcademy = import.meta.glob<{ GodotAcademyViewport: ComponentType<GodotAcademyViewportProps> }>(
+  "./GodotAcademyViewport.tsx",
+)["./GodotAcademyViewport.tsx"];
+const GodotAcademyViewport = loadGodotAcademy
+  ? lazy(() => loadGodotAcademy().then((m) => ({ default: m.GodotAcademyViewport })))
+  : undefined;
 import { RuntimeCommands } from "./RuntimeCommands";
+import { ObservationLabels, RuntimeRunSettings } from './RuntimeRunSettings';
+import { RuntimeModelBudget } from './RuntimeModelBudget';
+import { ReopenDifferences } from './ReopenDifferences';
+import { RulingInspection } from './RuntimeAdjudication';
+import { OpeningInspection } from "./OpeningReadiness";
 import { SocialInspector, executionText } from './SocialInspector';
-import { RuntimeLineageTools, RuntimeReviewResults } from './RuntimeLineageTools';
+import { RuntimeLineageTools } from './RuntimeLineageTools';
 import { RuntimeObservationExport } from './RuntimeObservationExport';
 import { RuntimeReplay } from './RuntimeReplay';
+import { RuntimeTranscript } from './RuntimeTranscript';
+import { eventText, eventTitle, reasons } from './eventText';
+import { PerceptionSummary } from "./PerceptionPreparation";
 import {
   displayName,
+  perceptionText,
   evidenceText,
+  openingLabels,
   purposeNames,
+  scenarioPeriodLabel,
   runtimeRequest,
   RuntimeError,
   type Envelope,
   type HostSession,
   type Worldline,
   type Role,
+  type OpeningCitation,
+  type PremiseSource,
   type RuntimeEvent,
 } from "./api";
 import "./academy.css";
 import.meta.glob("./godot-library.css", { eager: true });
-
-const actionNames: Record<string, string> = {
-  read:'阅读冻结文本', compare:'核对文本片段',
-  speak: "交谈",
-  observe: "观察",
-  move: "移动",
-  take: "拾取",
-  transfer: "交接",
-  wait: "等待",
-  goal: "目标变化",
-  cognition: "认知更新",
-  environment: "环境调整",
-  relocate: "场景调整",
-  scene_event: "场景事件",
-  schedule: "安排事件",
-  trigger: "定时事件",
-  advance_idle: "等待唤醒 · 推进一个逻辑量子",
-};
-const reasons: Record<string, string> = {
-  entry_requires_item: "未满足进入地点所需物品条件",
-  not_connected: "地点之间不可直接通行",
-  item_not_available: "物品不在当前地点",
-  item_not_owned: "角色未持有该物品",
-  recipient_not_colocated: "接收者不在同一地点",
-};
-export function eventText(frame: Envelope, event: RuntimeEvent) {
-  const p = frame.projection,
-    name = displayName(p, event.actor_id),
-    a = event.args || {};
-  if (!event.accepted)
-    return `${name}的行动被拒绝：${reasons[event.reason_code || ""] || event.reason_code || "规则未满足"}。`;
-  if (event.action_type === "speak")
-    return `${name}：${event.text || a.speech || "已提交交谈"}`;
-  if (event.action_type === "move" && a.destination_id)
-    return `${name}从${displayName(p, event.location_id)}前往${displayName(p, String(a.destination_id))}。`;
-  if (event.action_type === "goal")
-    return `${name}调整了自身目标${a.goal ? `：${a.goal}` : "。"}`;
-  if (["scene_event", "trigger"].includes(event.action_type))
-    return event.text || "一项场景事件已发生。";
-  return `${name} · ${actionNames[event.action_type] || event.action_type}${event.action_type === "cognition" ? "（暂定信念／计划，不是世界事实）" : ""}`;
-}
 
 export function RuntimeMonitor({
   world,
@@ -103,6 +92,8 @@ export function RuntimeMonitor({
   lines,
   line,
   role,
+  spoilerFree,
+  onSpoilerFree,
   history,
   busy,
   connection,
@@ -115,7 +106,7 @@ export function RuntimeMonitor({
   onRole,
   onHistory,
   onControl,
-  onReturnToReview,
+  returnTo,
   onReconnect,
 }: {
   world: string;
@@ -124,6 +115,8 @@ export function RuntimeMonitor({
   lines: Worldline[];
   line: string | null;
   role: Role;
+  spoilerFree: boolean;
+  onSpoilerFree: (value: boolean) => void;
   history: number | null;
   busy: boolean;
   connection: string;
@@ -136,17 +129,15 @@ export function RuntimeMonitor({
   onRole: (role: Role) => void;
   onHistory: (seq: number | null) => void;
   onControl: (action: string) => void;
-  onReturnToReview?: () => void;
+  returnTo?: { label: string; goBack: () => void };
   onReconnect: () => void;
 }) {
-  const layout = useMonitorLayout(),
-    [params, setParams] = useSearchParams(),
-    mode = params.get("view") === "2d" ? "2d" : "text";
+  const layout = useMonitorLayout(), [params, setParams] = useSearchParams();
   const [place, setPlace] = useState(""),
     [follow, setFollow] = useState(false),
     [filter, setFilter] = useState("all"),
     [query, setQuery] = useState(""),
-    [selected, setSelected] = useState("");
+    [selection, setSelection] = useState<{ event: RuntimeEvent; scope: string; line: string }>();
   const [godotEnabled, setGodotEnabled] = useState(false);
   const comparison = godotEnabled && params.get("renderer") === "godot";
   useEffect(() => {
@@ -168,11 +159,15 @@ export function RuntimeMonitor({
     [destination, setDestination] = useState(""),
     [moveBusy, setMoveBusy] = useState(false),
     [moveError, setMoveError] = useState("");
-  const moveRequest = useRef<unknown>(undefined),
-    feed = useRef<HTMLDivElement>(null),
-    [latest, setLatest] = useState(true);
+  const [messageScope, setMessageScope] = useState('all');
+  const [submittedCursor, setSubmittedCursor] = useState('');
+  const moveRequest = useRef<unknown>(undefined);
+  const [reveal, setReveal] = useState<{ event: RuntimeEvent; scope: string; text?: string; error?: string; busy?: boolean }>();
   const p = frame?.projection,
     scene = p?.scene,
+    academy = scene?.series_id === 'modern-academy',
+    mode = academy && AcademyViewport && params.get('view') === '2d' ? '2d' : 'text',
+    prepared = scene?.preparation,
     person = p?.agents[actor],
     name = (id: string | null | undefined) =>
       p ? displayName(p, id) : id || "世界";
@@ -191,6 +186,7 @@ export function RuntimeMonitor({
     history === null &&
     p &&
     !p.historical;
+  const commandsSynced = frame?.cursor !== submittedCursor;
   const activePlace =
     p?.role === "participant"
       ? p.agents[p.actor_id!].location
@@ -202,39 +198,49 @@ export function RuntimeMonitor({
             Object.keys(p?.world.place_topology || {})[0] ||
             "";
   useEffect(() => {
-    setSelected("");
+    setSelection(undefined);
+    setReveal(undefined);
+    setMessageScope('all');
+    setHistoryMode('log');
     setPlace("");
     setFollow(false);
     setDialog("");
     setDestination("");
     moveRequest.current = undefined;
     setMoveError("");
+    setSubmittedCursor('');
   }, [line, session?.viewer_scope]);
-  useEffect(() => {
-    if (latest && mode === "text" && feed.current)
-      feed.current.scrollTop = feed.current.scrollHeight;
-  }, [frame?.events.length, latest, mode]);
   function selectEvent(event: RuntimeEvent) {
-    setSelected(event.event_id);
+    if (!p) return;
+    setSelection({ event, scope: p.viewer_scope, line: p.worldline_id });
     setTab("inspect");
-    layout.set({ inspector: true });
-    setLatest(false);
+    layout.set({ inspector: true, ...(layout.narrow ? { log: false } : {}) });
     if (
       event.location_id &&
       event.location_id in (scene?.places || {}) &&
       p?.role !== "participant"
     )
       setPlace(event.location_id);
-    requestAnimationFrame(() =>
-      document
-        .getElementById(`experience-event-${event.event_id}`)
-        ?.scrollIntoView({ block: "nearest" }),
-    );
   }
   function chooseActor(id: string) {
     onActor(id);
-    setSelected("");
+    setSelection(undefined);
     layout.set({ inspector: true });
+  }
+  function citationLink(source: OpeningCitation) {
+    const index = scene?.materials?.findIndex(row => row.node_id === source.node_id && row.version === source.version &&
+      row.start === source.start && row.end === source.end) ?? -1;
+    return p && index >= 0 ? <Link className="runtime-origin-link" to={`/worlds/${world}/create/source?${new URLSearchParams({
+      worldline: p.worldline_id, index: String(index),
+      ...(p.historical && p.seq !== null ? { seq: String(p.seq) } : {}),
+    })}`}>查看冻结依据 · {scene?.materials?.[index].title} · v{source.version}</Link> : `冻结依据 · v${source.version}`;
+  }
+  function jumpToStep(source: PremiseSource) {
+    if (p?.worldline_id === source.worldline_id) onHistory(source.seq);
+    else onLine(source.worldline_id, source.seq);
+  }
+  function premiseAnchor(source: PremiseSource) {
+    return <button type="button" className="text-link" onClick={() => jumpToStep(source)}>回到确定依据的第 {source.seq} 步</button>;
   }
   function chooseExit(id: string) {
     if (!p) return;
@@ -278,8 +284,26 @@ export function RuntimeMonitor({
       setMoveBusy(false);
     }
   }
-  const events = frame?.events || [],
-    selectedEvent = events.find((e) => e.event_id === selected);
+  const events = frame?.events || [];
+  const selectedEvent = selection && p && selection.scope === p.viewer_scope && selection.line === p.worldline_id
+    && (!p.historical || (selection.event.seq ?? 0) <= (p.seq ?? 0)) ? selection.event : undefined;
+  const selected = selectedEvent?.event_id;
+  const gatedReveal = reveal && p?.spoiler_free && reveal.scope === p.viewer_scope ? reveal : undefined;
+  async function requestReveal() {
+    if (!gatedReveal || !session || !p || gatedReveal.event.seq == null) return;
+    const pending = gatedReveal;
+    setReveal({ ...pending, busy: true });
+    try {
+      const result = await runtimeRequest<{ event_id: string; text: string }>(session,
+        `/worldlines/${encodeURIComponent(p.worldline_id)}/messages/${pending.event.seq}/reveal`, undefined, 'POST');
+      if (result.event_id !== pending.event.event_id) throw new Error('event_changed');
+      setReveal(value => value?.scope === pending.scope && value.event.event_id === result.event_id
+        ? { ...value, text: result.text, busy: false } : value);
+    } catch {
+      setReveal(value => value?.scope === pending.scope && value.event.event_id === pending.event.event_id
+        ? { ...value, busy: false, error: '暂时无法查证这条原话。' } : value);
+    }
+  }
   const filtered = events.filter(
     (e) =>
       (filter === "all" ||
@@ -302,9 +326,9 @@ export function RuntimeMonitor({
     <div className="simulation-context academy-context">
       <button
         className="monitor-icon"
-        aria-label={onReturnToReview ? "返回审阅" : "返回世界线列表"}
-        title={onReturnToReview ? "返回审阅" : "返回世界线列表"}
-        onClick={onReturnToReview ?? (() => setParams({}))}
+        aria-label={returnTo?.label ?? "返回世界线列表"}
+        title={returnTo?.label ?? "返回世界线列表"}
+        onClick={returnTo?.goBack ?? (() => setParams({}))}
       >
         <ArrowLeft size={18} />
       </button>
@@ -326,7 +350,7 @@ export function RuntimeMonitor({
       <span className="monitor-status">
         {p ? executionText(p) : '正在读取'}
       </span>
-      {p?.seq != null && <span className="monitor-step">第{p.seq}步</span>}
+      {p?.seq != null && <span className="monitor-step">第{p.seq}步{p.run && ` · 时刻 ${p.sim_time_tick}`}</span>}
       <button
         className="monitor-icon"
         aria-label="起点与运行设置"
@@ -353,12 +377,12 @@ export function RuntimeMonitor({
         <button role="tab" aria-selected={false} onClick={()=>setHistoryMode('log')}>世界日志</button>
         <button role="tab" aria-selected={true} onClick={()=>setHistoryMode('replay')}>Replay</button>
       </div>
-      {frame&&session&&line&&<RuntimeReplay world={world} line={line} frame={frame} session={session} history={history} onHistory={onHistory} onActor={chooseActor} onPlace={id=>setPlace(id)} onSource={()=>{setTab('source');layout.set({inspector:true});}}/>}
+      {frame&&session&&line&&<RuntimeReplay world={world} line={line} frame={frame} session={session} history={history} onHistory={onHistory} onActor={chooseActor} onPlace={id=>setPlace(id)} onInspect={selectEvent} onSource={()=>{setTab('source');layout.set({inspector:true});}}/>}
     </> : (
     <>
       <div className="runtime-log-mode" role="tablist" aria-label="模拟历史入口">
         <button role="tab" aria-selected={true} onClick={()=>setHistoryMode('log')}>世界日志</button>
-        <button role="tab" aria-selected={false} onClick={()=>setHistoryMode('replay')}>Replay</button>
+        {p?.role === 'creator_observer' && <button role="tab" aria-selected={false} onClick={()=>setHistoryMode('replay')}>Replay</button>}
       </div>
       <div className="monitor-log-tabs" role="tablist" aria-label="日志类别">
         {[
@@ -412,9 +436,7 @@ export function RuntimeMonitor({
               <span className="log-summary">{eventText(frame!, e)}</span>
               <span className="log-tags">
                 <span>
-                  {e.accepted
-                    ? actionNames[e.action_type] || e.action_type
-                    : "规则阻止"}
+                  {eventTitle(e)}
                 </span>
                 <span>{name(e.actor_id)}</span>
                 {e.location_id && <span>{name(e.location_id)}</span>}
@@ -459,6 +481,8 @@ export function RuntimeMonitor({
       <div className="monitor-inspector-body academy-inspector">
         {!p ? (
           <p>读取授权世界后可选择角色或事件。</p>
+        ) : tab === "source" && p.spoiler_free ? (
+          <p>防泄底已开启，整份冻结资料与角色内幕暂时隐藏。</p>
         ) : tab === "source" ? (
           <>
             <h2>本次世界线的来源</h2>
@@ -467,10 +491,48 @@ export function RuntimeMonitor({
             </span>
             <p>
               场景来源：
-              {scene
+              {academy
                 ? "学院与周边街区 · v" + scene.series_version
-                : "既有冻结起点"}
+                : prepared ? "作者准备的文本起点" : "既有冻结起点"}
             </p>
+            {scene?.reopen && <ReopenDifferences difference={scene.reopen} world={world} line={p.worldline_id} />}
+            {prepared && <div>
+              <h3>冻结开场 · {openingLabels[prepared.opening.mode]}</h3>
+              <p>{prepared.opening.location_name} · {prepared.opening.time || '未标注时间'}</p>
+              {prepared.opening.anchor && <p>接续 {prepared.opening.anchor.path} · v{prepared.opening.anchor.version}</p>}
+              {prepared.opening.situation && <p className="sim-source-text">{prepared.opening.situation}</p>}
+              <p>背景时期 · {scenarioPeriodLabel(prepared.period)}</p>
+              {prepared.origin && <p>发起章幕 · <Link className="runtime-origin-link" to={`/worlds/${world}/create?${new URLSearchParams({
+                  work: prepared.origin.work_id, node: prepared.origin.id, mode: 'read',
+                })}`}>{prepared.origin.path}</Link></p>}
+              {prepared.readiness && <details>
+                <summary>冻结的开局检查与角色输入</summary>
+                <OpeningInspection check={prepared.readiness} citation={citationLink} />
+              </details>}
+              {p.premises && <details>
+                <summary>本线往事与关键未知</summary>
+                <ul className="opening-input-list">
+                  {Object.entries(p.premises.ordinary).map(([id, past]) => <li key={id}>
+                    <strong>{past.text}</strong>
+                    <small>{p.premises?.resolved[id] ? '已成立的本线往事' : '已授权，尚未补充'} · 亲历者 {past.witnesses.map(name).join('、')}</small>
+                    {p.premises?.resolved[id] && premiseAnchor(p.premises.resolved[id].source)}
+                  </li>)}
+                  {Object.entries(p.premises.unknowns).map(([id, entry]) => {
+                    const resolved = p.premises?.resolved[id];
+                    return <li key={id}>
+                      <strong>{entry.title}</strong>
+                      <small>{resolved ? '答案已确定' : entry.may_resolve ? '已授权 · 答案留白' : '未授权 · 答案留白'}</small>
+                      {resolved && <><p>{resolved.text}</p>{premiseAnchor(resolved.source)}</>}
+                    </li>;
+                  })}
+                </ul>
+              </details>}
+              <details open>
+                <summary>冻结的关联范围 · {prepared.scope.length} 项</summary>
+                {prepared.scope.map(item => <p key={item.key}><strong>{item.title} · v{item.version}</strong><br />
+                  <small>{item.reasons.join(' · ')}</small></p>)}
+              </details>
+            </div>}
             {scene?.sources?.[actor] ? (
               <p>
                 角色来源：已冻结作品对象 v{scene.sources[actor].entity_version}
@@ -492,8 +554,8 @@ export function RuntimeMonitor({
             {p.role === "creator_observer" && scene?.materials?.length ? (
               <div>
                 <h3>本次选定资料</h3>
-                {scene.materials.map((material) => (
-                  <p key={`${material.node_id}:${material.version}`}>
+                {scene.materials.map((material, index) => (
+                  <p key={`${material.node_id}:${material.version}:${index}`}>
                     {material.work_title} / {material.title} · v{material.version}
                     <br />
                     <small>
@@ -501,10 +563,19 @@ export function RuntimeMonitor({
                         ? "作者参考，未自动交给角色"
                         : "已配置为角色可知资料"}
                     </small>
+                    <Link to={`/worlds/${world}/create/source?${new URLSearchParams({
+                      worldline: p.worldline_id,
+                      index: String(index),
+                      ...(p.historical && p.seq !== null ? { seq: String(p.seq) } : {}),
+                      ...(mode === "2d" ? { view: "2d" } : {}),
+                    })}`}>
+                      查看冻结版本与选区
+                    </Link>
+                    {" · "}
                     <a
                       href={`#/worlds/${world}/create?work=${material.work_id}&node=${material.node_id}&mode=read`}
                     >
-                      返回资料阅读
+                      打开当前资料
                     </a>
                   </p>
                 ))}
@@ -528,7 +599,7 @@ export function RuntimeMonitor({
                 <p>资源版本 · {scene.asset_version}</p>
                 <h3>角色初始位置</h3>
                 <ul>{Object.entries(scene.initial_setup.role_locations).map(([id, location]) => (
-                  <li key={id}>{name(id)} · {name(location)} · 外观 {(scene.actors[id]?.avatar ?? 0) + 1}
+                  <li key={id}>{name(id)} · {name(location)}{academy && ` · 外观 ${(scene.actors[id]?.avatar ?? 0) + 1}`}
                     {scene.sources?.[id] && <small>作品对象 v{scene.sources[id].entity_version}</small>}
                   </li>
                 ))}</ul>
@@ -545,39 +616,50 @@ export function RuntimeMonitor({
                 {scene.initial_setup.access_rules.map((rule) => (
                   <p key={`${rule.destination_id}:${rule.item_id}`}>进入{name(rule.destination_id)}需持有{name(rule.item_id)}</p>
                 ))}
+                {scene.initial_setup.perception && <PerceptionSummary layout={scene.initial_setup.perception} nameOf={name} />}
               </details>
             )}
-            <p>
-              保存后修改作品或模板，不会重新计算本线起点。结果进入 Canon
-              仍需正式审阅，可在“结果记录”主动挑选提案。
-            </p>
+            <p>世界线起点保留保存时的作品与模板版本。</p>
           </>
         ) : selectedEvent ? (
           <>
             <span className="eyebrow">
               {selectedEvent.seq ? `第${selectedEvent.seq}步` : "角色经历"}
             </span>
-            <h2>
-              {selectedEvent.accepted
-                ? actionNames[selectedEvent.action_type] ||
-                  selectedEvent.action_type
-                : "规则阻止"}
-            </h2>
-            <p>{eventText(frame!, selectedEvent)}</p>
+            <h2>{eventTitle(selectedEvent)}{selectedEvent.message_kind && selectedEvent.message_kind !== 'premise' && ' · 原话与出处'}</h2>
+            {selectedEvent.message_kind && selectedEvent.message_kind !== 'premise' && <p>{selectedEvent.actor_id ? name(selectedEvent.actor_id) : '场景'}
+              {selectedEvent.recipient_ids?.length ? ` → ${selectedEvent.recipient_ids.map(name).join('、')}` : ''}</p>}
+            {selectedEvent.action_type === 'speak' && selectedEvent.accepted && <h3>角色陈述</h3>}
+            {selectedEvent.decision_source && <p>角色自主 · {selectedEvent.decision_source === 'rules' ? '无模型规则调度' : '模型决策'}</p>}
+            {selectedEvent.ruling ? <RulingInspection p={p} event={selectedEvent} onSource={jumpToStep} /> : selectedEvent.concealed ? <Button onClick={() => {
+              setReveal({ event: selectedEvent, scope: p.viewer_scope });
+              if (layout.narrow) layout.set({ inspector: false });
+            }}>{selectedEvent.message_kind === 'premise' ? '查证答案' : '查证原话'}</Button> : selectedEvent.message_kind === 'premise' ? null : selectedEvent.message_kind
+              ? <blockquote className="transcript-quote">{eventText(frame!, selectedEvent)}</blockquote>
+              : <p>{eventText(frame!, selectedEvent)}</p>}
+            {selectedEvent.expression && <div className="runtime-expression">
+              <h3>{{ original: '原作依据', line_past: '本线补充', key_unknown: '本线关键未知' }[selectedEvent.expression.kind]}</h3>
+              {selectedEvent.expression.kind === 'key_unknown' && <strong>{selectedEvent.expression.title}</strong>}
+              <p>{selectedEvent.expression.text}</p>
+              {selectedEvent.expression.kind === 'original' ? citationLink(selectedEvent.expression.citation)
+                : selectedEvent.expression.source.worldline_id === p.worldline_id && selectedEvent.expression.source.seq === selectedEvent.seq
+                  ? <small>本步确定</small> : premiseAnchor(selectedEvent.expression.source)}
+            </div>}
             {selectedEvent.location_id && (
               <p>记录发生地：{name(selectedEvent.location_id)}</p>
             )}
-            <small>场景默认显示当前所选状态；选取记录不会偷偷还原世界。</small>
+            {selectedEvent.message_kind === 'scene' && <p>接收范围 · 在场角色</p>}
+            <ObservationLabels hits={selectedEvent.observations} />
             {selectedEvent.seq != null && p.role !== "participant" && (
               <Button onClick={() => onHistory(selectedEvent.seq!)}>
                 查看这一步的历史状态
               </Button>
             )}
-            {selectedEvent.seq!=null&&p.role==='creator_observer'&&p.capabilities.includes('review')&&session&&<RuntimeObservationExport key={`${p.worldline_id}:${selectedEvent.event_id}:${session.viewer_scope}`} session={session} world={world} line={p.worldline_id} seq={selectedEvent.seq} eventOptions={events.filter(event=>event.seq!=null).map(event=>({seq:event.seq!,label:eventText(frame!,event),logicalTick:event.sim_time_after,actionType:event.action_type}))} connected={Boolean(online&&["实时同步已连接","历史状态 · 只读"].includes(connection))}/>}
+            {selectedEvent.seq!=null&&p.role==='creator_observer'&&p.capabilities.includes('observation_export')&&session&&<RuntimeObservationExport key={`${p.worldline_id}:${selectedEvent.event_id}:${session.viewer_scope}`} session={session} world={world} line={p.worldline_id} seq={selectedEvent.seq} eventOptions={events.filter(event=>event.seq!=null).map(event=>({seq:event.seq!,label:eventText(frame!,event),logicalTick:event.sim_time_after}))} connected={Boolean(online&&["实时同步已连接","历史状态 · 只读"].includes(connection))}/>}
           </>
         ) : person ? (
           <>
-            {scene && (
+            {academy && AcademyViewport && (
               <div
                 className="academy-portrait"
                 style={{
@@ -593,6 +675,7 @@ export function RuntimeMonitor({
             <p>
               <MapPin size={14} /> 当前地点：{name(person.location)}
             </p>
+            {person.waiting && <p>{person.waiting.until_tick === null ? '等待本人收到新见闻' : `等待至时刻 ${person.waiting.until_tick}`}</p>}
             {p.capabilities.some((c) =>
               ["inspect_cognition", "inspect_own_cognition"].includes(c),
             ) &&
@@ -612,11 +695,11 @@ export function RuntimeMonitor({
                   <summary>经历与记忆 · {person.memories?.length || 0}</summary>
                   {person.memories?.slice(-20).map((m, i) => (
                     <p key={i}>
-                      {m.text.startsWith("{")
+                      {m.channel ? perceptionText(p, m) : m.text.startsWith("{")
                         ? "现场观察记录（仅包含当时获准信息）"
                         : m.text}
                       <small>
-                        {m.basis === "reported"
+                        {m.channel === "sound" ? "声音证据" : m.basis === "reported"
                           ? "他人转述"
                           : m.basis === "observed"
                             ? "现场观察"
@@ -635,12 +718,10 @@ export function RuntimeMonitor({
                         {evidenceText(value)}
                         {typeof value !== "string" && (
                           <small>
-                            {String((value as { basis: string }).basis) ===
-                            "reported"
-                              ? "转述，不自动为真"
-                              : (value as {basis:string}).basis==='read' ? '实际阅读的文本，不自动为真'
-                              : (value as {basis:string}).basis==='checked' ? '选定片段的字面核对结果'
-                              : "起点明确已知"}
+                            {{ reported: '转述，不自动为真', read: '实际阅读的文本，不自动为真',
+                              checked: '选定片段的字面核对结果', established: '本线已确定的前提',
+                              experienced: (value as {premise_id?: string}).premise_id ? '本线补充 · 亲历' : '亲历',
+                            }[(value as {basis:string}).basis] || '起点明确已知'}
                           </small>
                         )}
                       </p>
@@ -713,7 +794,11 @@ export function RuntimeMonitor({
       }
       overlays={
         <>
-          {dialog && (
+          {dialog === 'unshield' && <Dialog title="关闭防泄底" onClose={() => setDialog('')} focusFirstInput={false}>
+            <p>关闭后，消息、历史和比较会显示隐藏的原话与已确定的关键未知。</p>
+            <Button variant="primary" onClick={() => { setDialog(''); onSpoilerFree(false); }}>确认关闭</Button>
+          </Dialog>}
+          {dialog && dialog !== 'unshield' && (
             <Dialog
               title={
                 dialog === "results"
@@ -721,23 +806,18 @@ export function RuntimeMonitor({
                   : dialog === "commands"
                     ? p?.role === "participant"
                       ? "角色行动"
-                      : "正式干预"
+                      : "作者介入"
                     : "起点与运行设置"
               }
               onClose={() => setDialog("")}
             >
               {dialog === "results" ? (
-                p?.role === 'creator_observer' && frame && session ? <RuntimeReviewResults key={p.worldline_id} world={world} frame={frame} session={session} connected={Boolean(online && frame && ["实时同步已连接", "历史状态 · 只读"].includes(connection))}/> : <>
-                  <p>
-                    {purposeNames[scene?.purpose || ""] || "未分类"} ·
-                    已保存。不会自动加入原作主要待审队列。
-                  </p>
-                  {events.map((e) => (
-                    <p key={e.event_id}>
-                      {e.seq ? `第${e.seq}步 · ` : ""}
-                      {eventText(frame!, e)}
-                    </p>
-                  ))}
+                frame && <>
+                  {!events.length && <p>还没有可查看的近期记录。</p>}
+                  {events.map(event => <article className="review-context-card" key={event.event_id}>
+                    <p>{event.seq != null && `第${event.seq}步 · `}{eventText(frame, event)}</p>
+                    <Button onClick={() => { setDialog(''); selectEvent(event); }}>查看{event.seq != null ? `第${event.seq}步` : '记录'}</Button>
+                  </article>)}
                 </>
               ) : frame && session ? (
                 <>
@@ -745,17 +825,24 @@ export function RuntimeMonitor({
                     {scene?.title || title} ·{" "}
                     {purposeNames[scene?.purpose || ""] || "未分类"}
                   </p>
-                  {p?.role === "creator_observer" && (
+                  {p?.role === "creator_observer" && dialog !== 'commands' && (
                     <p>
                       规则策略仅执行有限的已提交计划，不会自主交谈。模型策略只有在宿主另行启用并授权预算后才可使用。
                     </p>
                   )}
+                  {p?.role === 'creator_observer' && !p.spoiler_free && p.capabilities.includes('autonomy') && dialog === 'settings' &&
+                    <div key={`${p.worldline_id}:${session.viewer_scope}`}>
+                      <RuntimeRunSettings session={session} frame={frame} connected={Boolean(connected && commandsSynced)} onCommit={setSubmittedCursor} />
+                      <RuntimeModelBudget session={session} frame={frame} connected={Boolean(connected && commandsSynced)} onCommit={setSubmittedCursor} />
+                    </div>}
                   {(p?.role === "participant" ||
                     p?.capabilities.includes("intervene")) && (
                     <RuntimeCommands
                       session={session}
                       frame={frame}
-                      connected={Boolean(connected)}
+                      connected={Boolean(connected && commandsSynced)}
+                      authorOnly={p?.role === 'creator_observer' && dialog === 'commands'}
+                      onCommit={setSubmittedCursor}
                     />
                   )}
                 </>
@@ -764,6 +851,13 @@ export function RuntimeMonitor({
               )}
             </Dialog>
           )}
+          {gatedReveal && <Dialog title={gatedReveal.event.message_kind === 'premise' ? '查证本线答案' : '查证这条原话'} busy={gatedReveal.busy} onClose={() => setReveal(undefined)} focusFirstInput={false}>
+            {gatedReveal.text !== undefined ? <blockquote className="transcript-quote">{gatedReveal.text}</blockquote>
+              : <p>查看可能提前得知尚未揭晓的情节。此次查证只打开当前这条记录。</p>}
+            {gatedReveal.error && <ErrorNotice>{gatedReveal.error}</ErrorNotice>}
+            {gatedReveal.text === undefined && <Button variant="primary" disabled={gatedReveal.busy}
+              onClick={() => void requestReveal()}>{gatedReveal.event.message_kind === 'premise' ? '确认查看答案' : '确认查看原话'}</Button>}
+          </Dialog>}
           {destination && (
             <Dialog
               title={`前往${name(destination)}`}
@@ -820,7 +914,7 @@ export function RuntimeMonitor({
         )}
         <span className="scene-observer">
           {purposeNames[scene?.purpose || ""] || "独立模拟"}
-          {scene ? " · 学院系列" : ""}
+          {academy ? " · 学院系列" : ""}
           {p?.lineage?.ancestors.at(-1) && <button className="runtime-parent-link" onClick={() => { const anchor = p.lineage!.ancestors.at(-1)!; onLine(anchor.worldline_id, anchor.seq); }}>查看分叉点 · 第{p.lineage.ancestors.at(-1)!.seq}步</button>}
         </span>
       </header>
@@ -836,7 +930,7 @@ export function RuntimeMonitor({
               {name(id)}
             </button>
           ))}
-        {godotEnabled && scene?.asset_version === "academy-art-v1" && (
+        {AcademyViewport && godotEnabled && scene?.asset_version === "academy-art-v1" && (
           <select
             className="godot-renderer-select"
             aria-label="2.5D 对照渲染器"
@@ -860,7 +954,7 @@ export function RuntimeMonitor({
             <option value="godot">Godot 对照</option>
           </select>
         )}
-        <div className="academy-modes" role="tablist" aria-label="世界表现模式">
+        {academy && AcademyViewport && <div className="academy-modes" role="tablist" aria-label="世界表现模式">
           <button
             role="tab"
             aria-selected={mode === "text"}
@@ -892,7 +986,7 @@ export function RuntimeMonitor({
           >
             3D
           </button>
-        </div>
+        </div>}
       </div>
       {p?.historical && (
         <div className="academy-history-note">
@@ -908,7 +1002,7 @@ export function RuntimeMonitor({
           <h2>{line ? "正在读取授权世界状态" : "选择一条已保存世界线"}</h2>
           <p>{error || connection}</p>
         </div>
-      ) : mode === "2d" && scene ? (
+      ) : mode === "2d" && scene && AcademyViewport ? (
         <Suspense fallback={<div className="academy-empty">正在载入场景…</div>}>
           {scene.asset_version !== "academy-art-v1" && !godot && (
             <div className="academy-history-note">
@@ -929,7 +1023,7 @@ export function RuntimeMonitor({
               </Button>
             </div>
           )}
-          {godot ? (
+          {godot && GodotAcademyViewport ? (
             <GodotAcademyViewport
               key={`${p!.viewer_scope}:${line}:${scene.asset_version}`}
               frame={frame}
@@ -985,58 +1079,11 @@ export function RuntimeMonitor({
             />
           )}
         </Suspense>
-      ) : (
-        <div
-          className="scene-feed"
-          ref={feed}
-          tabIndex={0}
-          aria-label="对话与演化记录"
-        >
-          <div className="scene-start">
-            <span>冻结起点 · {title}</span>
-            <small>同一世界线 · 表现切换不改变世界</small>
-          </div>
-          {!events.length && (
-            <p className="monitor-empty">
-              起点已保存，角色尚未开始行动。可配置运行策略，或进入角色模式提交行动。
-            </p>
-          )}
-          {events.map((e) => (
-            <article
-              id={`experience-event-${e.event_id}`}
-              key={e.event_id}
-              className={`academy-event ${!e.accepted ? "is-blocked" : ""} ${e.event_id === selected ? "is-selected" : ""}`}
-              onClick={() => selectEvent(e)}
-            >
-              <div>
-                {!e.accepted ? (
-                  <Shield size={20} />
-                ) : e.action_type === "speak" ? (
-                  <MessageCircle size={20} />
-                ) : e.action_type === "move" ? (
-                  <Footprints size={20} />
-                ) : (
-                  <Flag size={20} />
-                )}
-              </div>
-              <div>
-                <header>
-                  <strong>{name(e.actor_id)}</strong>
-                  <small>
-                    {e.seq ? `第${e.seq}步` : "角色经历"}
-                    {e.location_id && ` · ${name(e.location_id)}`}
-                  </small>
-                </header>
-                <p>{eventText(frame, e)}</p>
-              </div>
-            </article>
-          ))}
-          <div className="scene-end">
-            {p ? executionText(p) : '正在读取'} ·
-            已提交结果已保存
-          </div>
-        </div>
-      )}
+      ) : session && p && <RuntimeTranscript key={`${p.worldline_id}:${p.viewer_scope}:${p.historical ? p.seq : 'live'}`}
+        frame={frame} session={session} title={title} selected={selected} filter={messageScope} onFilter={setMessageScope} onSelect={selectEvent} onSpoiler={() => {
+          if (spoilerFree) setDialog('unshield');
+          else onSpoilerFree(true);
+        }} />}
       <footer className="monitor-dock">
         <button
           className="monitor-icon"
@@ -1049,7 +1096,7 @@ export function RuntimeMonitor({
         {p?.capabilities.includes("control") ? (
           <button
             className="dock-run"
-            disabled={!connected || busy}
+            disabled={!connected || busy || !commandsSynced || p.conflict_pending}
             onClick={() =>
               onControl(p.control.status === "running" ? "pause" : "resume")
             }
@@ -1061,19 +1108,14 @@ export function RuntimeMonitor({
                 <Play size={19} />
               )}
             </span>
-            {p.control.status === "running" ? "暂停" : "继续"}
+            {p.control.status === "running" ? "暂停" : p.run?.settings.mode === 'segment' ? '推进一段' : '继续'}
           </button>
         ) : p?.role === "participant" ? (
           <button onClick={() => setDialog("commands")}>角色行动</button>
         ) : null}
-        <button
-          aria-pressed={mode === "2d" ? follow : latest}
-          onClick={() =>
-            mode === "2d" ? setFollow((v) => !v) : setLatest((v) => !v)
-          }
-        >
-          {mode === "2d" ? "跟随角色" : "跟随最新"}
-        </button>
+        {p?.role === 'creator_observer' && !p.historical && (p.capabilities.includes('adjudicate') || p.conflict_pending) &&
+          <button onClick={() => setDialog('commands')}>{p.conflict_pending ? '处理冲突' : '作者介入'}</button>}
+        {mode === "2d" && <button aria-pressed={follow} onClick={() => setFollow(v => !v)}>跟随角色</button>}
         <button onClick={() => setDialog("results")} disabled={!frame}>
           <FolderOpen size={16} />
           结果记录

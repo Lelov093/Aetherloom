@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
-import { entityKinds } from "../creation/api";
+import { entityKinds, type EntityDraft } from "../creation/api";
+import { ResourceFields } from "../creation/ResourceForm";
 import {
   catalogApi,
   objectTypeNames,
@@ -25,8 +26,10 @@ export function ObjectBrowser({
   excludeIds = [],
   onClose,
   onPick,
+  onStage,
   browse = false,
   searchFirst = false,
+  writingOnly = false,
 }: {
   world: string;
   title?: string;
@@ -35,8 +38,10 @@ export function ObjectBrowser({
   excludeIds?: string[];
   onClose: () => void;
   onPick: (object: ObjectRef) => void | Promise<void>;
+  onStage?: (draft: EntityDraft) => void;
   browse?: boolean;
   searchFirst?: boolean;
+  writingOnly?: boolean;
 }) {
   const [type, setType] = useState<ObjectType | "all">(
       searchFirst ? "all" : types[0],
@@ -50,6 +55,10 @@ export function ObjectBrowser({
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [retry, setRetry] = useState(0);
+  const [draft, setDraft] = useState<EntityDraft>();
+  const [pageKey, setPageKey] = useState("");
+  const queryKey = JSON.stringify([world, type, kind, q, offset, writingOnly]);
+  const includePreview = Boolean(onStage);
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -68,9 +77,14 @@ export function ObjectBrowser({
             q,
             entity_kind: type === "entity" ? kind || undefined : undefined,
             offset,
+            include_preview: includePreview || undefined,
+            writing_only: writingOnly || undefined,
           })
           .then((value) => {
-            if (active) setPage(value);
+            if (active) {
+              setPage(value);
+              setPageKey(queryKey);
+            }
           })
           .catch((e) => {
             if (active) setError(e.message);
@@ -85,9 +99,35 @@ export function ObjectBrowser({
       active = false;
       clearTimeout(timer);
     };
-  }, [world, type, kind, q, offset, retry, searchFirst]);
+  }, [world, type, kind, q, offset, retry, searchFirst, queryKey, includePreview, writingOnly]);
+  if (draft && onStage) {
+    const stage = () => {
+      const name = draft.name.trim();
+      if (name && name.length <= 160) onStage({ ...draft, name });
+    };
+    return <Dialog key="new-object" title="就地新建对象" onClose={() => setDraft(undefined)}>
+      <div onKeyDown={event => {
+        if (event.key !== 'Enter' || !(event.target instanceof HTMLInputElement)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        stage();
+      }}>
+        <p className="dialog-intro">确认保存事实时，这张卡会和引用一起保存。</p>
+        <ResourceFields name={draft.name} kind={draft.kind}
+          kinds={entityKind ? { [entityKind]: entityKinds[entityKind] } : entityKinds}
+          onName={name => setDraft({ ...draft, name })} onKind={kind => setDraft({ ...draft, kind })} />
+        <div className="dialog-actions">
+          <Button type="button" onClick={() => setDraft(undefined)}>取消新建</Button>
+          <Button type="button" variant="primary" disabled={!draft.name.trim() || draft.name.trim().length > 160} onClick={stage}>
+            加入草稿
+          </Button>
+        </div>
+      </div>
+    </Dialog>;
+  }
+  const canStage = onStage && type === "entity" && q.trim() && !loading && !error && pageKey === queryKey;
   return (
-    <Dialog title={title} onClose={onClose} busy={busy}>
+    <Dialog key="browse" title={title} onClose={onClose} busy={busy} className={includePreview ? 'reference-picker-dialog' : ''}>
       <div
         className="object-browser"
         onKeyDown={(e) => {
@@ -98,12 +138,12 @@ export function ObjectBrowser({
             e.preventDefault();
         }}
       >
-        <p className="dialog-intro">
+        {!includePreview && <p className="dialog-intro">
           {browse
             ? "按类型浏览，再查看资料或打开完整页面。"
             : "选择稳定对象引用；这一步不会修改正式设定。"}
-        </p>
-        <div className="quiet-tabs object-browser-types">
+        </p>}
+        {(!includePreview || types.length > 1) && <div className="quiet-tabs object-browser-types">
           {searchFirst && (
             <button
               type="button"
@@ -129,7 +169,7 @@ export function ObjectBrowser({
               {objectTypeNames[t]}
             </button>
           ))}
-        </div>
+        </div>}
         <div className="object-browser-filters">
           <label className="field">
             <span>查找对象</span>
@@ -185,7 +225,7 @@ export function ObjectBrowser({
               <button
                 type="button"
                 key={object.id}
-                disabled={excludeIds.includes(object.id) || busy || loading || !!error}
+                disabled={excludeIds.includes(object.id) || busy || loading || !!error || pageKey !== queryKey}
                 className={`object-browser-row ${selected?.id === object.id ? "selected" : ""}`}
                 aria-pressed={selected?.id === object.id}
                 onClick={() => setSelected(object)}
@@ -196,6 +236,8 @@ export function ObjectBrowser({
                   {object.subtitle || object.context}
                   {excludeIds.includes(object.id) && " · 当前引用不可选择"}
                 </small>
+                {!!object.category_paths?.length && <small>{object.category_paths.join(" · ")}</small>}
+                {object.excerpt && <small className="object-browser-excerpt">{object.excerpt}</small>}
               </button>
             ))}
             {page && !page.items.length && (
@@ -253,13 +295,16 @@ export function ObjectBrowser({
           )}
         </div>
         <div className="dialog-actions">
+          {canStage && <Button type="button" disabled={busy} onClick={() => setDraft({ name: q.trim(), kind: kind || "concept" })}>
+            新建对象…
+          </Button>}
           <Button type="button" disabled={busy} onClick={onClose}>
             取消
           </Button>
           <Button
             type="button"
             variant="primary"
-            disabled={!selected || busy}
+            disabled={!selected || busy || loading || pageKey !== queryKey}
             onClick={async () => {
               if (!selected) return;
               setBusy(true);

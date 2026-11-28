@@ -72,7 +72,7 @@ def augment(state, intent, plan):
     """Append one versioned before/after social effect to the existing atomic plan."""
     social = state.social.model_copy(deep=True)
     actor = intent.actor_id
-    tick = state.sim_time_tick + int(any(e.op == 'clock_advance' for e in plan.effects))
+    tick = next((effect.after for effect in plan.effects if effect.op == 'clock_advance'), state.sim_time_tick)
     args = intent.typed_args()
     def wake(who, reason):
         a = social.agents[who]

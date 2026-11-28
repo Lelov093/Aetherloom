@@ -1,6 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { ArrowLeft, Pause, Play, PanelLeft, PanelRight, MapPin, ChevronDown, Info, Radio, Grid2X2, Ellipsis, CheckCheck, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Pause, Play, PanelLeft, PanelRight, MapPin, ChevronDown, Info, Radio, Grid2X2, Ellipsis, RotateCcw } from 'lucide-react';
 import { Button, Dialog, ErrorNotice } from '../../components/ui';
 import { Select } from '../../components/FormControls';
 import { Portrait, PortraitEditor, usePortraits } from '../objects/Portrait';
@@ -12,9 +11,9 @@ import { SimulationLog } from './SimulationLog';
 import { SimulationMessage } from './SimulationMessage';
 import { SimulationInspector, type Focus } from './SimulationInspector';
 
-export function SimulationMonitor({ session, sessions, requestedSession, busy, switching, initialEvent, error, connection, onSession, onControl, onPropose, onBack, onRetry }: {
+export function SimulationMonitor({ session, sessions, requestedSession, busy, switching, initialEvent, error, connection, onSession, onControl, onBack, onRetry }: {
   session: Session; sessions: SessionSummary[]; requestedSession: string; busy: boolean; switching: boolean; initialEvent?: number; error: string; connection: string;
-  onSession: (id: string) => void; onControl: (action: string) => void; onPropose: (seq: number, kind: string) => void; onBack: () => void; onRetry: () => void;
+  onSession: (id: string) => void; onControl: (action: string) => void; onBack: () => void; onRetry: () => void;
 }) {
   const frameLayout = useMonitorLayout();
   const {layout,set,narrow,reset} = frameLayout;
@@ -71,7 +70,7 @@ export function SimulationMonitor({ session, sessions, requestedSession, busy, s
       <span className="monitor-step">第{session.cursor}步</span>
       <button type="button" className={`monitor-icon ${budgetNotice ? 'has-notice' : ''}`} aria-label="额度与起点" disabled={switching} title={session.error || '起点与运行额度'} onClick={() => setBudget(true)}><Info size={17}/></button>
     </div>}
-    log={<SimulationLog session={session} events={events} name={name} portraits={portraits} selected={selected} character={focus?.kind === 'character' ? focus.id : undefined} onSelect={seq => select(seq, true)} scrollRef={log}/>} inspector={<SimulationInspector session={session} focus={focus} events={events} portraits={portraits} busy={busy} name={name} onFocus={inspect} onPropose={onPropose} onPortrait={setPortrait} follow={follow} onFollow={setFollow}/>} switching={switching} notice={switching && <div className="monitor-switch-status" role="status">{error || '正在切换世界线…'}{error && <Button variant="ghost" onClick={onRetry}>重试</Button>}</div>} overlays={<>    {budget && <Dialog title="这段世界线的起点与额度" onClose={() => setBudget(false)}><p>{session.manifest.setup.start_label}</p><p>{session.manifest.setup.time_basis}</p><p>行动步：{session.cursor} / {session.manifest.setup.max_steps}</p><p>模型请求：{session.calls} / {session.manifest.setup.max_calls}</p><p>费用／预留：¥{session.cost.toFixed(4)} / ¥{session.manifest.setup.budget_yuan.toFixed(2)}</p>{session.error && <p>{session.error}</p>}<p>继续运行会调用模型。创建起点、阅读记录和选择审阅提案无需调用模型。</p><p>模拟结果进入正式设定仍需你显式接受。</p><Button onClick={() => setBudget(false)}>关闭</Button></Dialog>}
+    log={<SimulationLog session={session} events={events} name={name} portraits={portraits} selected={selected} character={focus?.kind === 'character' ? focus.id : undefined} onSelect={seq => select(seq, true)} scrollRef={log}/>} inspector={<SimulationInspector session={session} focus={focus} events={events} portraits={portraits} name={name} onFocus={inspect} onPortrait={setPortrait} follow={follow} onFollow={setFollow}/>} switching={switching} notice={switching && <div className="monitor-switch-status" role="status">{error || '正在切换世界线…'}{error && <Button variant="ghost" onClick={onRetry}>重试</Button>}</div>} overlays={<>    {budget && <Dialog title="这段世界线的起点与额度" onClose={() => setBudget(false)}><p>{session.manifest.setup.start_label}</p><p>{session.manifest.setup.time_basis}</p><p>行动步：{session.cursor} / {session.manifest.setup.max_steps}</p><p>模型请求：{session.calls} / {session.manifest.setup.max_calls}</p><p>费用／预留：¥{session.cost.toFixed(4)} / ¥{session.manifest.setup.budget_yuan.toFixed(2)}</p>{session.error && <p>{session.error}</p>}<p>继续运行会调用模型。创建起点和阅读记录可离线使用。</p><Button onClick={() => setBudget(false)}>关闭</Button></Dialog>}
     {portrait && <PortraitEditor id={portrait} name={name(portrait)} world={session.world_id} onSaved={() => { void reload().catch(() => setPortrait('')); }} onClose={() => setPortrait('')}/>}
 </>}>
         <header className="scene-heading"><div className="scene-view-label"><Grid2X2 size={17}/><h2>世界视图</h2></div>
@@ -94,7 +93,6 @@ export function SimulationMonitor({ session, sessions, requestedSession, busy, s
           <button type="button" className="monitor-icon" aria-label="显示世界日志" aria-pressed={layout.log} onClick={() => toggle('log')}><PanelLeft size={18}/></button>
           <button type="button" className="dock-run" aria-label={running ? '暂停并保存' : '继续运行'} disabled={busy || session.status === 'completed' || (!running && exhausted)} title={session.status === 'completed' ? '本段已完成' : exhausted ? '本段运行额度已到达' : running ? '暂停并保存' : '继续运行会调用模型'} onClick={() => onControl(running ? 'pause' : 'resume')}><span>{running ? <Pause size={19}/> : <Play size={19}/>}</span>{session.status === 'completed' ? '已完成' : !running && exhausted ? '已到额度' : running ? '暂停' : '继续'}</button>
           <button type="button" className="dock-follow" aria-label="跟随最新消息" aria-pressed={auto} onClick={() => auto ? setAuto(false) : latest()}><ChevronDown size={15}/><span>跟随最新</span></button>
-          <Link to={`/worlds/${session.world_id}/review/simulation`}><CheckCheck size={17}/><span>审阅结果</span></Link>
           <button type="button" className="monitor-icon" aria-label="显示模拟详情" aria-pressed={layout.inspector} onClick={() => toggle('inspector')}><PanelRight size={18}/></button>
           <details className="monitor-more"><summary aria-label="更多模拟操作" title="更多操作"><Ellipsis size={19}/></summary><div onClick={event => { if ((event.target as HTMLElement).closest('button')) event.currentTarget.parentElement?.removeAttribute('open'); }}>
             <button type="button" onClick={() => setBudget(true)}><Info size={15}/>起点与额度</button><button type="button" onClick={reset}><RotateCcw size={15}/>恢复默认布局</button><button type="button" onClick={onBack}><ArrowLeft size={15}/>世界线列表</button>

@@ -3,7 +3,7 @@ import type { CognitiveView, CognitiveExperience } from './api';
 import {evidenceText} from './api';
 
 const actionNames:Record<string,string>={speak:'发言',move:'移动',take:'拿取',transfer:'交接',observe:'观察',wait:'等待',goal:'调整目标',read:'阅读冻结文本',compare:'核对文本片段'};
-const evidenceNames:Record<string,string>={current_observation:'当次局部感知',historical_observation:'历史观察',action_result:'行动结果',report:'他人报告',read_text:'实际阅读的文本',text_comparison:'字面核对结果',initial:'起点资料',subjective:'本人主观解释'};
+const evidenceNames:Record<string,string>={current_observation:'当次局部感知',historical_observation:'历史观察',event_observation:'事件感知',action_result:'行动结果',report:'他人报告',read_text:'实际阅读的文本',text_comparison:'字面核对结果',initial:'起点资料',subjective:'本人主观解释'};
 const factNames:Record<string,string>={location:'所在地点',item_holder:'物品持有者',person_present:'是否在场',text:'原文引句'};
 const reasons:Record<string,string>={recipient_not_colocated:'接收者不在同一地点',item_not_available:'物品当前不能拿取',item_not_owned:'本人未持有该物品',entry_requires_item:'缺少进入所需物品',not_connected:'无法直接到达该地点'};
 const planStates:Record<string,string>={active:'进行中',blocked:'受阻（本人判断）',completed:'完成（本人判断）',abandoned:'已放弃'};

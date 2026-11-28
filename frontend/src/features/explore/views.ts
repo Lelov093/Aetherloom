@@ -1,7 +1,8 @@
 import type { Viewport, XYPosition } from '@xyflow/react';
-import { families, type Family } from './api';
+import { families, type Family, type RelationDirection } from './api';
 import { timeLayers, type TimeLayer, type YearRange } from './api';
 import { validTimeViewport, type TimeViewport } from './timelineModel';
+import { readMoment, storyParams, type StoryMoment } from '../periods/api';
 
 export interface SavedView {
   id: string; name: string; focus: string; hops: number; expanded: string[];
@@ -11,6 +12,9 @@ export interface SavedView {
   timelineRelationship?: string;
   mapEvent?: { id: string; label: string };
   showMapConnections?: boolean;
+  direction?: RelationDirection;
+  relationLabel?: string;
+  moment?: StoryMoment;
   timelineViewport?: TimeViewport; timelineScroll?: number; cursor?: number;
   timeOffsets?: { placed: number; unplaced: number };
 }
@@ -39,6 +43,9 @@ export async function readViews(world: string): Promise<SavedView[]> {
         timelineRelationship: v.mode === 'timeline' && typeof v.timelineRelationship === 'string' ? v.timelineRelationship : undefined,
         mapEvent: v.mapEvent && typeof v.mapEvent.id === 'string' && typeof v.mapEvent.label === 'string' ? { id: v.mapEvent.id, label: v.mapEvent.label } : undefined,
         showMapConnections: v.mode === 'map' && typeof v.showMapConnections === 'boolean' ? v.showMapConnections : undefined,
+        direction: v.direction === 'outgoing' || v.direction === 'incoming' ? v.direction : 'any',
+        relationLabel: typeof v.relationLabel === 'string' ? v.relationLabel.slice(0, 160) : undefined,
+        moment: v.moment && typeof v.moment === 'object' ? readMoment(new URLSearchParams(storyParams(v.moment))) : undefined,
         range: Object.fromEntries(Object.entries(v.range || {}).filter(([key, value]) => ['start', 'end'].includes(key) && Number.isInteger(value) && Math.abs(value as number) <= 999999)),
         uncertain: v.uncertain !== false, layers: Array.isArray(v.layers) ? v.layers.filter((layer: TimeLayer) => timeLayers.includes(layer)) : timeLayers,
         timelineViewport: validTimeViewport(v.timelineViewport) ? v.timelineViewport : undefined,

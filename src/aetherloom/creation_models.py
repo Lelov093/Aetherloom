@@ -135,6 +135,7 @@ class InspirationCreate(Model):
     tags: list[str] = Field(default_factory=list, max_length=20)
     linked_nodes: list[str] = Field(default_factory=list, max_length=12)
     linked_entities: list[str] = Field(default_factory=list, max_length=12)
+    origin_node_id: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class InspirationPatch(Model):
@@ -145,11 +146,13 @@ class InspirationPatch(Model):
     status: InspirationStatus | None = None
     linked_nodes: list[str] | None = Field(default=None, max_length=12)
     linked_entities: list[str] | None = Field(default=None, max_length=12)
+    assigned_nodes: list[str] | None = None
 
 
 class Section(Model):
     title: str = Field(max_length=160)
     body: str = Field(max_length=200000)
+    id: str | None = Field(default=None, max_length=36, pattern=r'^[a-f0-9-]{36}$', exclude_if=lambda value: value is None)
 
 
 class EntityCreate(Model):
@@ -169,6 +172,9 @@ class EntityCreate(Model):
             raise ValueError('核心说明过长。')
         if self.custom_type and self.kind != 'custom':
             raise ValueError('自定义类型名称仅用于自定义对象。')
+        keys = [section.id for section in self.sections if section.id]
+        if len(keys) != len(set(keys)):
+            raise ValueError('说明小节的稳定标识不能重复。')
         return self
 
 

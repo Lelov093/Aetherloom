@@ -17,16 +17,26 @@ RECORDS = """WITH focused_entities AS (SELECT value AS id FROM json_each(:focus_
  e.id AS event_id,NULL AS subject_id,NULL AS object_id,e.location_id
  FROM canon_events e WHERE e.world_id=:world AND e.status='active'
  UNION ALL
- SELECT 'relationship',s.id,s.label,'',s.valid_from,s.valid_until,s.version,
+ SELECT 'relationship',s.id,s.label,'',
+ CASE WHEN p.from_event_id IS NULL THEN s.valid_from ELSE se.valid_from END,
+ CASE WHEN p.to_event_id IS NULL THEN s.valid_until ELSE ee.valid_until END,s.version,
  'relationship:'||r.id,a.name||' → '||b.name,NULL,r.subject_id,r.object_id,NULL
  FROM relationship_states s JOIN temporal_relationships r ON r.id=s.relationship_id
  JOIN entities a ON a.id=r.subject_id JOIN entities b ON b.id=r.object_id
+ LEFT JOIN canon_record_periods p ON p.kind='relationship' AND p.record_id=s.id
+ LEFT JOIN canon_events se ON se.id=p.from_event_id AND se.status='active'
+ LEFT JOIN canon_events ee ON ee.id=p.to_event_id AND ee.status='active'
  WHERE r.world_id=:world AND r.status='active' AND r.merged_into IS NULL AND s.status='active'
  AND a.status='active' AND a.merged_into IS NULL AND b.status='active' AND b.merged_into IS NULL
  UNION ALL
- SELECT 'assertion',f.id,f.predicate,f.value,f.valid_from,f.valid_until,f.version,
+ SELECT 'assertion',f.id,f.predicate,f.value,
+ CASE WHEN p.from_event_id IS NULL THEN f.valid_from ELSE se.valid_from END,
+ CASE WHEN p.to_event_id IS NULL THEN f.valid_until ELSE ee.valid_until END,f.version,
  'assertion:'||f.subject_id||':'||f.predicate,a.name||' · '||f.predicate,NULL,f.subject_id,f.object_id,NULL
  FROM assertions f JOIN entities a ON a.id=f.subject_id
+ LEFT JOIN canon_record_periods p ON p.kind='assertion' AND p.record_id=f.id
+ LEFT JOIN canon_events se ON se.id=p.from_event_id AND se.status='active'
+ LEFT JOIN canon_events ee ON ee.id=p.to_event_id AND ee.status='active'
  WHERE f.world_id=:world AND f.status='active' AND a.status='active' AND a.merged_into IS NULL
  AND (f.object_id IS NULL OR EXISTS(SELECT 1 FROM entities b WHERE b.id=f.object_id AND b.status='active' AND b.merged_into IS NULL))
 ), scoped AS (

@@ -5,6 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query, Request
 from .creation import CreationError, record
+from .writing_locations import WRITING_KINDS, writing_location
 
 router = APIRouter(prefix='/api')
 ObjectType = Literal['work', 'content', 'entity', 'event', 'relationship']
@@ -37,7 +38,33 @@ def item(world, kind, row):
                 to=f"{base}/create/records?tab=relations&relationship={row['id']}")
 
 
-def query(kind, world, q='', entity_kind=None, work_id=None):
+def entity_previews(conn, world, rows, items):
+    if not rows:
+        return
+    ids = [row['id'] for row in rows]
+    marks = ','.join('?' for _ in ids)
+    paths = {identity: [] for identity in ids}
+    for category in conn.execute(f'''
+        WITH RECURSIVE paths(id, label) AS (
+            SELECT id, name FROM world_categories WHERE world_id=? AND parent_id IS NULL
+            UNION ALL
+            SELECT c.id, p.label || ' / ' || c.name FROM world_categories c
+            JOIN paths p ON c.parent_id=p.id WHERE c.world_id=?
+        )
+        SELECT m.entity_id, p.label FROM world_category_members m JOIN paths p ON p.id=m.category_id
+        WHERE m.entity_id IN ({marks}) ORDER BY p.label
+    ''', (world, world, *ids)):
+        paths[category['entity_id']].append(category['label'])
+    for row, entry in zip(rows, items):
+        core = json.loads(row['core'])
+        sections = json.loads(row['sections'])
+        intro = next((text.strip() for text in core.values() if text.strip()), '')
+        if not intro:
+            intro = next((section['body'].strip() for section in sections if section['body'].strip()), '')
+        entry.update(category_paths=paths[row['id']], excerpt=' '.join(intro[:120].split()))
+
+
+def query(kind, world, q='', entity_kind=None, work_id=None, writing_only=False):
     escaped = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
     pattern = '%' + escaped + '%'
     if kind == 'work':
@@ -49,6 +76,9 @@ def query(kind, world, q='', entity_kind=None, work_id=None):
         if work_id:
             sql += ' AND n.work_id=?'
             args.append(work_id)
+        if writing_only:
+            sql += ' AND n.kind IN (' + ','.join('?' for _ in WRITING_KINDS) + ')'
+            args.extend(WRITING_KINDS)
     elif kind == 'entity':
         sql = "SELECT * FROM entities WHERE world_id=? AND status='active' AND merged_into IS NULL AND (name LIKE ? ESCAPE '\\' OR aliases LIKE ? ESCAPE '\\')"
         args = [world, pattern, pattern]
@@ -71,25 +101,36 @@ def query(kind, world, q='', entity_kind=None, work_id=None):
 @router.get('/worlds/{world}/catalog')
 def browse(world: str, request: Request, type: QueryType = 'entity', q: str = Query('', max_length=200),
            entity_kind: str | None = None, work_id: str | None = None,
-           offset: int = Query(0, ge=0), limit: int = Query(40, ge=1, le=100)):
+           offset: int = Query(0, ge=0), limit: int = Query(40, ge=1, le=100),
+           include_preview: bool = False, writing_only: bool = False):
     repo = request.app.state.creation
     repo.get(world)
     with repo.connection() as conn:
         if type == 'all':
             items, total = [], 0
             for category in ('entity','work','content','event','relationship'):
-                sql, args = query(category, world, q.strip(), entity_kind, work_id)
+                sql, args = query(category, world, q.strip(), entity_kind, work_id, writing_only)
                 total += conn.execute(f'SELECT count(*) FROM ({sql})', args).fetchone()[0]
                 label = {'entity':'name','relationship':'label'}.get(category,'title')
                 rows = conn.execute(sql + f' ORDER BY {label} COLLATE NOCASE,id LIMIT 8', args).fetchall()
                 items.extend(item(world,category,r) for r in rows)
             return dict(items=items, total=total, offset=0, limit=40)
-        sql, args = query(type, world, q.strip(), entity_kind, work_id)
+        if type == 'entity' and include_preview:
+            conn.execute('BEGIN')
+        sql, args = query(type, world, q.strip(), entity_kind, work_id, writing_only)
         total = conn.execute(f'SELECT count(*) FROM ({sql})', args).fetchone()[0]
         # Stable ordering keeps pagination repeatable for an unchanged collection.
         label = {'entity':'name','relationship':'label'}.get(type, 'title')
         rows = conn.execute(sql + f' ORDER BY {label} COLLATE NOCASE,id LIMIT ? OFFSET ?', [*args, limit, offset]).fetchall()
-        return dict(items=[item(world, type, r) for r in rows], total=total, offset=offset, limit=limit)
+        items = [item(world, type, row) for row in rows]
+        if type == 'content' and writing_only:
+            for entry in items:
+                location = writing_location(conn, entry['id'])
+                if location:
+                    entry['subtitle'] = f"{location['work_title']} · {location['path']}"
+        if type == 'entity' and include_preview:
+            entity_previews(conn, world, rows, items)
+        return dict(items=items, total=total, offset=offset, limit=limit)
 
 
 @router.get('/worlds/{world}/catalog/{type}/{identity}')

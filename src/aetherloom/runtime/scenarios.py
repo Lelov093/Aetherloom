@@ -1,4 +1,5 @@
 """Explicit, atomic template preparation on an already migrated shared database."""
+import json
 from uuid import uuid4
 from typing import Literal
 
@@ -7,8 +8,9 @@ from pydantic import Field, model_serializer
 from aetherloom import canon
 from aetherloom.creation import record
 from aetherloom.creation_models import inspect_document
+from aetherloom.writing_locations import WRITING_KINDS, writing_location
 from .baseline import FrozenBaseline
-from .contracts import (Model, Agent, Evidence, BaselineSource, RuntimeAggregate,
+from .contracts import (Model, Agent, Evidence, BaselineSource, MaterialSpan, PerceivedMemory, PerceptionLayout, RuntimeAggregate,
                         World, Scheduler, INTERACTIVE_STATE, INTERACTIVE_EVENT, INTERACTIVE_SCHEDULER,
                         COGNITIVE_STATE, READING_STATE, READING_EVENT)
 from .domain import RuntimeFault, canonical
@@ -54,11 +56,7 @@ class ItemInput(Model):
         return value
 
 
-class MaterialInput(Model):
-    node_id: str = Field(min_length=1, max_length=120)
-    version: int = Field(ge=1)
-    start: int = Field(ge=0)
-    end: int = Field(ge=1)
+class MaterialInput(MaterialSpan):
     purpose: Literal['author_reference', 'agent_knowledge'] = 'author_reference'
     known_by: list[str] = Field(default_factory=list, max_length=6)
 
@@ -87,6 +85,17 @@ class ScenarioInput(Model):
     unsupported_hard_rules: list[str] = Field(default_factory=list, max_length=8)
     confirmed: bool = False
     social: SocialSetup | None = None
+    perception: PerceptionLayout | None = None
+    origin_node_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @model_serializer(mode='wrap')
+    def serialize(self, handler):
+        value = handler(self)
+        if self.perception is None:
+            value.pop('perception', None)
+        if self.origin_node_id is None:
+            value.pop('origin_node_id', None)
+        return value
 
 
 def _slots(values, defaults):
@@ -126,6 +135,10 @@ def compile_scenario(conn, world, body):
         raise RuntimeFault('world_unavailable')
     if canon.revision(conn, world) != body.expected_revision:
         raise RuntimeFault('scenario_sources_changed')
+    if body.origin_node_id:
+        location = writing_location(conn, body.origin_node_id)
+        if not location or location['world_id'] != world or location['status'] != 'active' or location['kind'] not in WRITING_KINDS:
+            raise RuntimeFault('scenario_sources_changed')
     if not body.confirmed or not body.adaptations.strip():
         raise RuntimeFault('scenario_confirmation_required')
     if body.unsupported_hard_rules:
@@ -141,6 +154,11 @@ def compile_scenario(conn, world, body):
         raise RuntimeFault('scenario_actor_required')
     if any(p.location not in places for p in body.roles if p.enabled):
         raise RuntimeFault('invalid_scenario_location')
+    if body.perception is not None and any(
+        body.perception.zones.get(body.perception.positions[role.id]) != role.location
+        for role in body.roles if role.id in body.perception.positions
+    ):
+        raise RuntimeFault('invalid_perception_position')
     allowed = {p['id']: set(p['neighbors']) for p in ACADEMY['places']}
     if any(set(p.neighbors) - allowed[p.id] or len(set(p.neighbors)) != len(p.neighbors) for p in body.places):
         raise RuntimeFault('invalid_scenario_connection')
@@ -185,7 +203,7 @@ def compile_scenario(conn, world, body):
     state = RuntimeAggregate(world_id=world, worldline_id=line, baseline_id=baseline_id,
         state_schema_version=INTERACTIVE_STATE, event_schema_version=INTERACTIVE_EVENT,
         world=World(place_topology={p.id: p.neighbors for p in body.places}, items={i.id: i.holder for i in body.items},
-                    access_rules=[r.model_dump() for r in body.access_rules], environment={}),
+                    access_rules=[r.model_dump() for r in body.access_rules], environment={}, perception=body.perception),
         agents=agents, scheduler=Scheduler(ready_actor_order=list(agents), pending_jobs=[], insertion_counter=0, policy_version=INTERACTIVE_SCHEDULER))
     from .social_setup import compile_social
     compile_social(conn, body, state, sources)
@@ -203,22 +221,36 @@ def compile_scenario(conn, world, body):
     return state, baseline, manifest
 
 
-def create(runtime, world, body, *, hook=lambda stage: None):
+def preparation_store(runtime):
     store = runtime._enabled()
     if not runtime.options.interactive or store.layout != 'shared' or store.storage_version < 3:
         raise RuntimeFault('scenario_migration_required')
-    if body.social is not None and store.storage_version < 4:
+    return store
+
+
+def create(runtime, world, body, *, hook=lambda stage: None, compiler=compile_scenario):
+    store = preparation_store(runtime)
+    social = getattr(body, 'social', None)
+    if social is not None and store.storage_version < 4:
         raise RuntimeFault('social_history_migration_required')
-    payload = canonical(body.model_dump(exclude={'social'} if body.social is None else set()))
+    payload = canonical(body.model_dump(exclude={'social'} if social is None else set()))
     with store.connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
         prior = conn.execute('SELECT worldline_id,request FROM runtime_v2_scenarios WHERE world_id=? AND request_id=?', (world, body.request_id)).fetchone()
         if prior:
             if prior['request'] != payload: raise RuntimeFault('scenario_request_conflict')
             return {'worldline_id': prior['worldline_id'], 'world_id': world}
-        state, baseline, manifest = compile_scenario(conn, world, body)
+        state, baseline, manifest = compiler(conn, world, body)
         hook('prepared')
         store.create(state, baseline=baseline, connection=conn)
+        settings = manifest.get('reopen', {}).get('run_settings')
+        if settings is not None:
+            control = conn.execute('SELECT ledger FROM runtime_v2_execution_control WHERE worldline_id=?',
+                                   (state.worldline_id,)).fetchone()
+            execution = json.loads(control['ledger'])
+            execution['run'] = {'settings': settings, 'used': 0}
+            conn.execute('UPDATE runtime_v2_execution_control SET ledger=? WHERE worldline_id=?',
+                         (canonical(execution), state.worldline_id))
         hook('initial_saved')
         conn.execute('INSERT INTO runtime_v2_scenarios VALUES(?,?,?,?,?)', (state.worldline_id, world, body.request_id, payload, canonical(manifest)))
         hook('scenario_saved')
@@ -231,24 +263,33 @@ def view(manifest, projection):
     if not manifest: return None
     setup, role = manifest['setup'], projection['role']
     places = set(projection['world']['place_topology']) | {v for vs in projection['world']['place_topology'].values() for v in vs}
+    places |= {person['location'] for person in projection['agents'].values()}
     actors, items = set(projection['agents']), set(projection['world']['items'])
     result = {key: manifest[key] for key in ('series_id', 'series_version', 'asset_version', 'title', 'purpose')}
-    result['places'] = {p['id']: {'name': p['name'], 'description': p['description'] if p['id'] in projection['world']['place_topology'] else ''}
+    guarded = projection.get('spoiler_free')
+    result['places'] = {p['id']: {'name': p['name'], 'description': p['description'] if not guarded and p['id'] in projection['world']['place_topology'] else ''}
                         for p in setup['places'] if p['id'] in places}
     result['actors'] = {p['id']: {k: p[k] for k in ('name', 'avatar')} for p in setup['roles'] if p['enabled'] and p['id'] in actors}
-    result['items'] = {p['id']: {k: p[k] for k in ('name', 'description')} for p in setup['items'] if p['id'] in items}
-    if role == 'creator_observer':
+    result['items'] = {p['id']: {'name': p['name'], 'description': '' if guarded else p['description']}
+                       for p in setup['items'] if p['id'] in items}
+    if role == 'creator_observer' and not guarded:
         for item in setup['items']:
             if item.get('text') is not None: result['items'][item['id']]['text'] = item['text']
         result['background'] = setup['background']
         result['adaptations'] = setup['adaptations']
         result['initial_setup'] = {
-            'role_locations': {p['id']: p['location'] for p in setup['roles'] if p['enabled']},
+            'role_locations': {p['id']: p['location'] for p in setup['roles'] if p['enabled'] and not p.get('candidate')},
             'item_holders': {i['id']: i['holder'] for i in setup['items']},
             'exits': {p['id']: p['neighbors'] for p in setup['places']},
             'access_rules': setup.get('access_rules', []),
         }
+        if setup.get('perception') is not None:
+            result['initial_setup']['perception'] = setup['perception']
         if setup.get('social'): result['social_setup'] = setup['social']
+        if manifest.get('preparation') is not None:
+            result['preparation'] = manifest['preparation']
+        if manifest.get('reopen'):
+            result['reopen'] = manifest['reopen']
         result['sources'] = {p['id']: {'entity_id': p['entity_id'], 'entity_version': p['entity_version']}
                              for p in setup['roles'] + setup['places'] if p.get('entity_id')}
         result['materials'] = [{key: value[key] for key in
@@ -259,23 +300,48 @@ def view(manifest, projection):
     elif role == 'participant':
         own = next(p for p in setup['roles'] if p['id'] == projection['actor_id'])
         result['actors'][own['id']]['persona'] = own['persona']
+        seen = _sighted_ids(projection['agents'][own['id']]['memories'])
+        if seen:
+            result['observation_names'] = {entry['id']: entry['name'] for entry in setup['roles'] + setup['items']
+                                           if entry['id'] in seen}
     return result
 
 
+def _sighted_ids(records):
+    return {identity for record in records if record.get('channel') == 'sight'
+            for identity in (record['actor_id'], *record['facts'].values()) if identity is not None}
+
+
 def profile(store, state, actor):
-    manifest = store.scenario(state.worldline_id)
+    return scenario_profile(store.scenario(state.worldline_id), state, actor)
+
+
+def scenario_profile(manifest, state, actor):
     if not manifest: return None
     from .interactive import perception
     local = perception(state, actor)
     mine = next(p for p in manifest['setup']['roles'] if p['id'] == actor)
     visible_places = set(local['exits']) | {local['location']}
+    visible_places |= {other['location'] for other in local['people'].values()}
     recognized = set(local['people'])
+    seen = _sighted_ids(m.model_dump() for m in state.agents[actor].memories if isinstance(m, PerceivedMemory))
     if state.social:
         own=state.social.agents[actor]
         recognized |= set(own.appraisals) | {p.target_id for p in own.plans} | {m.actor_id for m in state.agents[actor].memories}
     return {'name': mine['name'], 'persona': mine['persona'],
+            **({'voice_sample': mine['voice_sample']} if mine.get('voice_sample') else {}),
             'place_description': next(p['description'] for p in manifest['setup']['places'] if p['id'] == local['location']),
             'place_names': {p['id']: p['name'] for p in manifest['setup']['places'] if p['id'] in visible_places},
-            'people_names': {p['id']: p['name'] for p in manifest['setup']['roles'] if p['id'] in recognized},
-            'item_names': {p['id']: p['name'] for p in manifest['setup']['items'] if p['id'] in local['items']},
+            'people_names': {p['id']: p['name'] for p in manifest['setup']['roles'] if p['id'] in recognized | seen},
+            'item_names': {p['id']: p['name'] for p in manifest['setup']['items'] if p['id'] in local['items'] or p['id'] in seen},
             'item_descriptions': {p['id']: p['description'] for p in manifest['setup']['items'] if p['id'] in local['items']}}
+
+
+def model_context(state, actor, manifest):
+    from .cognition import build_context
+    query = state.agents[actor].goal
+    if state.social:
+        own = state.social.agents[actor]
+        query += ' ' + ' '.join(p.next_step for p in own.plans if p.status == 'active')
+    return build_context(state, actor, strategy='retrieval' if state.social else 'recent12', query=query,
+                         profile=scenario_profile(manifest, state, actor))

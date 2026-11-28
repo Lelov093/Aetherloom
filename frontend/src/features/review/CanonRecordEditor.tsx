@@ -3,6 +3,8 @@ import { NumberInput } from '../../components/FormControls';
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
 import { EntityChoice } from "../objects/EntityChoice";
 import { creationApi, request, type Entity } from "../creation/api";
+import { periodsApi } from '../periods/api';
+import { EventSelect } from '../periods/PeriodViews';
 import {
   reviewApi,
   type CanonEvent,
@@ -16,6 +18,7 @@ export type RecordEdit =
       kind: "relationship";
       pair?: CanonRelationship;
       state?: RelationshipState;
+      transition?: boolean;
     };
 export function CanonRecordEditor({
   world,
@@ -31,15 +34,17 @@ export function CanonRecordEditor({
   const event = edit.kind === "event" ? edit.event : undefined,
     pair = edit.kind === "relationship" ? edit.pair : undefined,
     state = edit.kind === "relationship" ? edit.state : undefined;
+  const transition = edit.kind === 'relationship' && !!edit.transition && !!state;
   const [entities, setEntities] = useState<Entity[]>([]),
     [events, setEvents] = useState<CanonEvent[]>([]),
     [name, setName] = useState(event?.title || state?.label || ""),
     [description, setDescription] = useState(
       event?.description || state?.description || "",
     ),
-    [from, setFrom] = useState(event?.valid_from || state?.valid_from || ""),
+    [anchor, setAnchor] = useState(''),
+    [from, setFrom] = useState(transition ? '' : event?.valid_from || state?.valid_from || ""),
     [until, setUntil] = useState(
-      event?.valid_until || state?.valid_until || "",
+      transition ? '' : event?.valid_until || state?.valid_until || "",
     ),
     [note, setNote] = useState(
       event?.source_note || state?.source_note || "人工世界编辑",
@@ -97,13 +102,14 @@ export function CanonRecordEditor({
   );
   return (
     <Dialog
-      title={`${event || state ? "编辑" : "创建"}正式${edit.kind === "event" ? "事件" : "关系状态"}`}
+      title={transition ? '记录关系的历史变化' : `${event || state ? "编辑" : "创建"}正式${edit.kind === "event" ? "事件" : "关系状态"}`}
       onClose={onClose}
       busy={busy}
     >
       <p className="dialog-intro">
-        确认会写入正式历史，独立于正文与
-        Simulation。编辑保留原版本和原文来源；新增关系状态不会替代已有状态。
+        {transition ? '原关系在所选事件前有效。事件后使用新状态，两条记录都可回查。'
+          : state ? '修正当前记录的文字或时间，历次修改仍可回查。'
+          : '确认会写入正式历史。故事时间可以留空。'}
       </p>
       <form
         onSubmit={async (e) => {
@@ -147,7 +153,8 @@ export function CanonRecordEditor({
                 : state
                   ? `/relationship-states/${state.id}`
                   : `/worlds/${world}/relationship-states`;
-            await request(url, {
+            if (transition) await periodsApi.transitionRelationship(world, state.id, { ...body, event_id: anchor });
+            else await request(url, {
               method: event || state ? "PATCH" : "POST",
               body: JSON.stringify(body),
             });
@@ -160,6 +167,7 @@ export function CanonRecordEditor({
           }
         }}
       >
+        {transition && <EventSelect events={events} value={anchor} onChange={setAnchor} disabled={busy}/>}
         <label className="field">
           <span>{edit.kind === "event" ? "事件标题" : "关系状态名称"}</span>
           <input
@@ -271,8 +279,8 @@ export function CanonRecordEditor({
           </>
         ) : (
           <>
-            {entitySelect("关系主体", subject, setSubject, !!pair)}
-            {entitySelect("关系对象", object, setObject, !!pair)}
+            {entitySelect("关系主体", subject, setSubject, !!pair && !transition)}
+            {entitySelect("关系对象", object, setObject, !!pair && !transition)}
             {hasLocationPair && <fieldset className="record-picker">
               <label><input type="checkbox" checked={mapConnection} onChange={e => setMapConnection(e.target.checked)}/>标记为地图连通</label>
               <p className="context-hint">在 Canon Map 上显示这条关系及其有效时间。角色通行由模拟规则决定。</p>
@@ -291,8 +299,8 @@ export function CanonRecordEditor({
           </>
         )}
         {[
-          [from, setFrom, "生效故事时间"],
-          [until, setUntil, "失效故事时间"],
+          ...(!transition && !state?.from_event_id ? [[from, setFrom, "生效故事时间"]] : []),
+          ...(!transition && !state?.to_event_id ? [[until, setUntil, "失效故事时间"]] : []),
           [note, setNote, "来源说明"],
         ].map(([value, set, label]) => (
           <label className="field" key={String(label)}>
@@ -312,11 +320,11 @@ export function CanonRecordEditor({
             variant="primary"
             disabled={
               busy ||
-              !loaded ||
+              !loaded || (transition && !anchor) ||
               (edit.kind === "relationship" && (!subject || !object))
             }
           >
-            明确确认并保存
+            {transition ? '保存新状态' : '明确确认并保存'}
           </Button>
         </div>
       </form>

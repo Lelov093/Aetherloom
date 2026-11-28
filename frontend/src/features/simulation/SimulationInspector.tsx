@@ -11,9 +11,9 @@ export type Focus = { kind: 'event'; seq: number } | { kind: 'character' | 'loca
 function Section({ title, icon, children, className = '' }: { title: string; icon: ReactNode; children: ReactNode; className?: string }) {
   return <section className={`inspector-section ${className}`}><h3>{icon}{title}</h3>{children}</section>;
 }
-export function SimulationInspector({ session, focus, events, portraits, busy, name, onFocus, onPropose, onPortrait, follow, onFollow }: {
-  session: Session; focus: Focus | undefined; events: PresentedEvent[]; portraits: Record<string, number>; busy: boolean;
-  name: (id: string) => string; onFocus: (focus: Focus) => void; onPropose: (seq: number, kind: string) => void; onPortrait: (id: string) => void; follow: string; onFollow: (id: string) => void;
+export function SimulationInspector({ session, focus, events, portraits, name, onFocus, onPortrait, follow, onFollow }: {
+  session: Session; focus: Focus | undefined; events: PresentedEvent[]; portraits: Record<string, number>;
+  name: (id: string) => string; onFocus: (focus: Focus) => void; onPortrait: (id: string) => void; follow: string; onFollow: (id: string) => void;
 }) {
   const [tab, setTab] = useState('overview');
   const body = useRef<HTMLDivElement>(null);
@@ -22,6 +22,7 @@ export function SimulationInspector({ session, focus, events, portraits, busy, n
   useLayoutEffect(() => { setTab('overview'); }, [focusKey]);
   useLayoutEffect(() => { if (body.current) body.current.scrollTop = 0; }, [focusKey, tab]);
   const p = focus?.kind === 'event' ? events.find(value => value.event.seq === focus.seq) : undefined;
+  const historicalProposals = p ? session.proposals.filter(value => value.seq === p.event.seq) : [];
   const character = focus?.kind === 'character' ? focus.id : undefined, agent = character ? session.state.agents[character] : undefined;
   const place = focus?.kind === 'location' ? focus.id : undefined;
   const latest = character ? events.filter(value => value.involved.includes(character)).at(-1) : undefined;
@@ -76,8 +77,8 @@ export function SimulationInspector({ session, focus, events, portraits, busy, n
           <p className="inspector-event-text">{p.event.narration}</p><p className="inspector-boundary">这是当步记录；角色详情展示当前第{session.cursor}步状态。</p>
           <Section title="参与者与地点" icon={<UserRound size={15}/>}><div className="inspector-inline-links"><button type="button" onClick={() => onFocus({ kind: 'character', id: p.event.actor_id })}>{name(p.event.actor_id)}<ArrowUpRight size={13}/></button>{p.recipients.map(id => <button type="button" key={id} onClick={() => onFocus({ kind: 'character', id })}>{name(id)}<ArrowUpRight size={13}/></button>)}{p.location && <button type="button" onClick={() => onFocus({ kind: 'location', id: p.location })}><MapPin size={13}/>{name(p.location)}<ArrowUpRight size={13}/></button>}</div></Section>
           <Section title="本步变化" icon={<Activity size={15}/>}><div className="inspector-change-list"><StateChanges diff={p.event.diff} name={name}/></div>{!p.event.accepted && <p>行动未成立，世界状态未按提议改变。</p>}</Section>
-          {!!p.event.accepted && <Section title="交给你审阅" icon={<FileText size={15}/>} className="inspector-review"><p className="inspector-secondary">选择只建立提案，接受前不会写入正式设定。</p>{session.proposals.filter(value => value.seq === p.event.seq).map(value => <Link key={value.id} className="inspector-source-link" to={`/worlds/${session.world_id}/review/simulation?proposal=${value.id}`}><span>{value.kind === 'event' ? '事件' : '状态事实'} · {({ pending: '待审阅', accepted: '已接受', rejected: '已拒绝' } as Record<string, string>)[value.status]}</span><ArrowUpRight size={14}/></Link>)}
-            <Button disabled={busy} onClick={() => onPropose(p.event.seq, 'event')}>选择事件进入 Review</Button>{['move', 'transfer', 'take', 'goal'].includes(p.event.payload.type) && <Button disabled={busy} onClick={() => onPropose(p.event.seq, 'assertion')}>选择状态事实进入 Review</Button>}
+          {!!historicalProposals.length && <Section title="历史模拟提案" icon={<FileText size={15}/>} className="inspector-review">
+            {historicalProposals.map(value => <Link key={value.id} className="inspector-source-link" to={`/worlds/${session.world_id}/review/simulation?proposal=${value.id}`}><span>{value.kind === 'event' ? '事件' : '状态事实'} · {({ pending: '未裁决', accepted: '已接受', rejected: '已拒绝' } as Record<string, string>)[value.status]}</span><ArrowUpRight size={14}/></Link>)}
           </Section>}
         </>}
         {place && <>

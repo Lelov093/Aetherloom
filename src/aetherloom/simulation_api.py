@@ -2,12 +2,10 @@ import asyncio
 import json
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse
-from pydantic import Field
 from .creation import CreationError
-from .creation_models import Model
-from .simulation_models import Setup, SimProposalEdit, SimDecision
-from .simulation_review import propose, preview, edit, decide
-from .creation_models import inspect_document
+from .simulation_models import Setup
+from .simulation_review import preview
+from .material_sources import describe_frozen_material
 
 router = APIRouter(prefix='/api')
 
@@ -49,11 +47,9 @@ def saved_material(world: str, request: Request, simulation: str, index: int = Q
             raise CreationError('找不到此模拟的保存来源。',404)
         source = materials[index]
         node = repo.required(conn,'nodes',source['node_id'])
-        return dict(id=f'{simulation}:{index}',node_id=source['node_id'],title=source['title'],work_id=source['work_id'],work_title=source['work_title'],
-                    source_version=source['version'],current_version=node['version'],metadata=source['content_version']['metadata'],
-                    text=inspect_document(source['content_version']['document'])[0],start=source['start'],end=source['end'],
-                    scope='fragment',note='本次模拟冻结的资料引用；不随当前正文变化。',stale=node['version']!=source['version'],
-                    status='active',source_archived=node['status']!='active',target_to=f'/worlds/{world}/simulate?session={simulation}',target_label=session['title'])
+        return describe_frozen_material(source, node, identity=f'{simulation}:{index}',
+                                        target_to=f'/worlds/{world}/simulate?session={simulation}',
+                                        target_label=session['title'])
 
 
 @router.get('/simulation-targets/{kind}/{identity}/sources')
@@ -115,16 +111,6 @@ async def stream(identity: str, request: Request, after: int = Query(default=0, 
     return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control':'no-cache'})
 
 
-class Propose(Model):
-    seq: int = Field(ge=1)
-    kind: str = 'event'
-
-
-@router.post('/simulations/{identity}/proposals', status_code=201)
-def proposal(identity: str, body: Propose, request: Request):
-    return propose(request.app.state.simulation.repo, identity, body.seq, body.kind)
-
-
 @router.get('/worlds/{world}/simulation-review')
 def review_list(world: str, request: Request):
     repo = request.app.state.simulation.repo
@@ -137,13 +123,3 @@ def review_list(world: str, request: Request):
 @router.get('/simulation-review/{identity}')
 def review_preview(identity: str, request: Request):
     return preview(request.app.state.simulation.repo, identity)
-
-
-@router.patch('/simulation-review/{identity}')
-def review_edit(identity: str, body: SimProposalEdit, request: Request):
-    return edit(request.app.state.simulation.repo, identity, body)
-
-
-@router.post('/simulation-review/{identity}/decide')
-def review_decide(identity: str, body: SimDecision, request: Request):
-    return decide(request.app.state.simulation.repo, identity, body)

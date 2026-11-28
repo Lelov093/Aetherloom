@@ -1,7 +1,7 @@
 """I1 wire/state contracts; independent from Legacy and experimental modules."""
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_serializer, model_validator
 from .social_models import SocialState, SocialSpeech, SocialCognition
 
 ENGINE = 'world-runtime-v2'
@@ -53,11 +53,73 @@ class InheritedEventSource(EventSource):
 Source = Annotated[BaselineSource | EventSource | InheritedEventSource, Field(discriminator='kind')]
 
 
+class MaterialSpan(Model):
+    node_id: str = Field(min_length=1, max_length=120)
+    version: int = Field(ge=1)
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+
+
+class OrdinaryPast(Model):
+    text: str = Field(min_length=1, max_length=450, pattern=r'\S')
+    witnesses: list[str] = Field(min_length=1, max_length=12)
+
+
+class KeyUnknown(Model):
+    title: str = Field(min_length=1, max_length=100, pattern=r'\S')
+    may_resolve: bool = False
+    knowers: list[str] = Field(default_factory=list, max_length=12)
+
+
+class PremiseResolution(Model):
+    text: str = Field(min_length=1, max_length=450, pattern=r'\S')
+    source: Annotated[EventSource | InheritedEventSource, Field(discriminator='kind')]
+
+
+class StoryPremises(Model):
+    ordinary: dict[str, OrdinaryPast]
+    unknowns: dict[str, KeyUnknown]
+    resolved: dict[str, PremiseResolution] = Field(default_factory=dict)
+
+
+class ItemClaim(Model):
+    actor_id: str
+    blocker: str | None
+
+
+class ItemContention(Model):
+    kind: Literal['item'] = 'item'
+    item_id: str
+    holder_id: str
+    claims: list[ItemClaim] = Field(min_length=2, max_length=8)
+
+
+class UnavailableConsequence(Model):
+    kind: Literal['consequence'] = 'consequence'
+    description: str = Field(min_length=1, max_length=450, pattern=r'\S')
+
+
+class PendingConflict(Model):
+    source: Annotated[EventSource | InheritedEventSource, Field(discriminator='kind')]
+    detail: Annotated[ItemContention | UnavailableConsequence, Field(discriminator='kind')]
+
+
 class Evidence(Model):
     text: str
-    basis: Literal['initial', 'reported', 'read', 'checked']
+    basis: Literal['initial', 'experienced', 'reported', 'read', 'checked', 'established']
     sender_id: str | None = None
     source: Source
+    original: MaterialSpan | None = None
+    premise_id: str | None = None
+
+    @model_serializer(mode='wrap')
+    def serialize(self, handler):
+        value = handler(self)
+        if self.original is None:
+            value.pop('original', None)
+        if self.premise_id is None:
+            value.pop('premise_id', None)
+        return value
 
 
 class Memory(Model):
@@ -74,14 +136,34 @@ class SceneMemory(Memory):
     basis: Literal['observed'] = 'observed'
 
 
+class PerceivedMemory(Memory):
+    actor_id: str | None = None
+    action_type: Literal['event_observation'] = 'event_observation'
+    basis: Literal['observed'] = 'observed'
+    channel: Literal['sight', 'sound']
+    facts: dict[str, str] = Field(default_factory=dict)
+
+
+class ActorWait(Model):
+    until_tick: int | None = Field(default=None, ge=0)
+
+
 class Agent(Model):
     location: str
     goal: str
     known: dict[str, Evidence] = Field(default_factory=dict)
-    memories: list[Memory | SceneMemory] = Field(default_factory=list)
+    memories: list[Memory | SceneMemory | PerceivedMemory] = Field(default_factory=list)
     beliefs: dict[str, str] = Field(default_factory=dict)
     committed_plans: list[str] = Field(default_factory=list)
     cooldowns: dict[str, int] = Field(default_factory=dict)
+    waiting: ActorWait | None = None
+
+    @model_serializer(mode='wrap')
+    def serialize(self, handler):
+        value = handler(self)
+        if self.waiting is None:
+            value.pop('waiting', None)
+        return value
 
 
 class AccessRule(Model):
@@ -111,17 +193,33 @@ class Scheduler(Model):
     policy_version: str = SCHEDULER
 
 
+class SenseLink(Model):
+    observer: str = Field(min_length=1, max_length=120)
+    source: str = Field(min_length=1, max_length=120)
+    sight: bool = False
+    sound: bool = False
+
+
+class PerceptionLayout(Model):
+    contract_version: Literal['regional-perception-v1'] = 'regional-perception-v1'
+    zones: dict[str, str] = Field(default_factory=dict, max_length=32)
+    positions: dict[str, str] = Field(default_factory=dict, max_length=32)
+    links: list[SenseLink] = Field(default_factory=list, max_length=128)
+
+
 class World(Model):
     place_topology: dict[str, list[str]]
     items: dict[str, str]
     access_rules: list[AccessRule]
     environment: dict[str, str | int]
     item_texts: dict[str, str] | None = None
+    perception: PerceptionLayout | None = None
 
     @model_serializer(mode='wrap')
     def serialize(self, handler):
         value = handler(self)
         if self.item_texts is None: value.pop('item_texts', None)
+        if self.perception is None: value.pop('perception', None)
         return value
 
 
@@ -158,6 +256,9 @@ class RuntimeAggregate(Model):
     max_domain_steps: int = Field(default=20000, ge=1)
     lineage: Lineage | None = None
     social: SocialState | None = None
+    candidates: dict[str, Agent] | None = None
+    premises: StoryPremises | None = None
+    pending_conflict: PendingConflict | None = None
 
     @model_serializer(mode='wrap')
     def serialize(self, handler):
@@ -167,11 +268,28 @@ class RuntimeAggregate(Model):
             value.pop('lineage', None)
         if self.social is None:
             value.pop('social', None)
+        if self.candidates is None:
+            value.pop('candidates', None)
+        if self.premises is None:
+            value.pop('premises', None)
+        if self.pending_conflict is None:
+            value.pop('pending_conflict', None)
         return value
 
 
 class EmptyArgs(Model):
     pass
+
+
+class WaitArgs(Model):
+    until_event: bool = False
+    duration: int | None = Field(default=None, ge=1, le=10000)
+
+    @model_validator(mode='after')
+    def check_wait(self):
+        if self.until_event and self.duration is not None:
+            raise ValueError('Choose one wait condition.')
+        return self
 
 
 class MoveArgs(Model):
@@ -198,6 +316,8 @@ class SpeakArgs(Model):
     recipient_id: str | None = None
     share_ids: list[str] = Field(default_factory=list, max_length=10)
     social: SocialSpeech | None = None
+    past_id: str | None = Field(default=None, max_length=80)
+    basis_id: str | None = Field(default=None, max_length=120)
 
 
 class GoalArgs(Model):
@@ -205,7 +325,7 @@ class GoalArgs(Model):
 
 
 ARG_TYPES = {'observe': EmptyArgs, 'move': MoveArgs, 'take': TakeArgs, 'transfer': TransferArgs,
-             'speak': SpeakArgs, 'wait': EmptyArgs, 'goal': GoalArgs, 'read': TakeArgs, 'compare': CompareArgs}
+             'speak': SpeakArgs, 'wait': WaitArgs, 'goal': GoalArgs, 'read': TakeArgs, 'compare': CompareArgs}
 
 
 class ActionIntent(Model):
@@ -259,6 +379,49 @@ class SceneEventArgs(Model):
     place_id: str
     text: str = Field(min_length=1, max_length=1500)
     audience: list[str] | None = None
+    spoiler: bool = False
+
+
+class CandidateInviteArgs(Model):
+    actor_id: str
+    text: str = Field(min_length=1, max_length=500, pattern=r'\S')
+
+
+class ResolveUnknownArgs(Model):
+    unknown_id: str = Field(min_length=1, max_length=80)
+    answer: str = Field(min_length=1, max_length=450, pattern=r'\S')
+
+
+class MoveAttempt(MoveArgs):
+    kind: Literal['move']
+
+
+class TakeAttempt(TakeArgs):
+    kind: Literal['take']
+
+
+class TransferAttempt(TransferArgs):
+    kind: Literal['transfer']
+
+
+class AttemptActionArgs(Model):
+    actor_id: str
+    action: Annotated[MoveAttempt | TakeAttempt | TransferAttempt, Field(discriminator='kind')]
+
+
+class ItemConflictArgs(Model):
+    item_id: str
+    actors: list[str] = Field(min_length=2, max_length=8)
+    critical: bool = True
+
+
+class ResolveConflictArgs(Model):
+    method: Literal['choose', 'draw', 'cancel']
+    actor_id: str | None = None
+
+
+ADJUDICATION_ARGS = {'attempt_action': AttemptActionArgs, 'item_conflict': ItemConflictArgs,
+                     'hold_consequence': UnavailableConsequence, 'resolve_conflict': ResolveConflictArgs}
 
 
 class ScheduleArgs(Model):
@@ -270,11 +433,15 @@ class TriggerArgs(Model):
 
 
 class IdleArgs(Model):
-    actors: list[str] = Field(min_length=1, max_length=40)
+    actors: list[str] = Field(max_length=40)
+    until_next: bool = False
+    stop_tick: int | None = Field(default=None, ge=0)
 
 
 COMMAND_ARGS = {'cognition': CognitionArgs, 'environment': EnvironmentArgs, 'relocate': RelocateArgs,
-                'scene_event': SceneEventArgs, 'schedule': ScheduleArgs, 'trigger': TriggerArgs, 'advance_idle': IdleArgs}
+                'scene_event': SceneEventArgs, 'candidate_invite': CandidateInviteArgs,
+                'resolve_unknown': ResolveUnknownArgs,
+                'schedule': ScheduleArgs, 'trigger': TriggerArgs, 'advance_idle': IdleArgs, **ADJUDICATION_ARGS}
 
 
 class CommandIntent(Model):
@@ -324,11 +491,31 @@ class KnowledgeSet(Model):
     after: Evidence
 
 
+class PremiseSet(Model):
+    op: Literal['premise_set'] = 'premise_set'
+    premise_id: str
+    before: None = None
+    after: PremiseResolution
+
+
+class PendingConflictSet(Model):
+    op: Literal['pending_conflict_set'] = 'pending_conflict_set'
+    before: PendingConflict | None
+    after: PendingConflict | None
+
+
+class WaitingSet(Model):
+    op: Literal['waiting_set'] = 'waiting_set'
+    entity_id: str
+    before: ActorWait | None
+    after: ActorWait | None
+
+
 class MemoryAppend(Model):
     op: Literal['memory_append'] = 'memory_append'
     entity_id: str
     before_length: int
-    evidence: Memory | SceneMemory
+    evidence: Memory | SceneMemory | PerceivedMemory
 
 
 class BeliefSet(Model):
@@ -373,8 +560,32 @@ class SocialSet(Model):
     after: SocialState
 
 
-Op = Annotated[LocationSet | HolderSet | GoalSet | KnowledgeSet | MemoryAppend | CounterSet | BeliefSet | PlansSet | EnvironmentSet | JobsSet | SocialSet, Field(discriminator='op')]
+class CandidateJoin(Model):
+    op: Literal['candidate_join'] = 'candidate_join'
+    entity_id: str
+
+
+Op = Annotated[LocationSet | HolderSet | GoalSet | KnowledgeSet | MemoryAppend | CounterSet | BeliefSet | PlansSet |
+               EnvironmentSet | JobsSet | SocialSet | CandidateJoin | PremiseSet | PendingConflictSet | WaitingSet, Field(discriminator='op')]
 OPS = TypeAdapter(list[Op])
+
+
+class AttemptRuling(Model):
+    kind: Literal['attempt'] = 'attempt'
+    attempt: AttemptActionArgs
+    location_id: str
+    required_items: list[str] = Field(default_factory=list)
+
+
+class ConflictRuling(Model):
+    kind: Literal['conflict'] = 'conflict'
+    conflict: PendingConflict
+    result: Literal['pending', 'blocked', 'rules', 'draw', 'chosen', 'cancelled']
+    winner_id: str | None = None
+    draw_index: int | None = Field(default=None, ge=0)
+
+
+Ruling = Annotated[AttemptRuling | ConflictRuling, Field(discriminator='kind')]
 
 
 class TransitionPlan(Model):
@@ -382,6 +593,23 @@ class TransitionPlan(Model):
     accepted: bool
     reason_code: str | None
     effects: list[Op]
+    ruling: Ruling | None = None
+
+
+class ObservationCondition(Model):
+    id: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=100, pattern=r'\S')
+    mode: Literal['mark', 'pause']
+    event: Literal['scheduled', 'move', 'take', 'transfer', 'read']
+    target_id: str = Field(min_length=1, max_length=120)
+
+
+class RunSettings(Model):
+    mode: Literal['continuous', 'segment'] = 'continuous'
+    segment_steps: int = Field(default=3, ge=1, le=50)
+    observations: list[ObservationCondition] = Field(default_factory=list, max_length=8)
+    story_stop_tick: int | None = Field(default=None, ge=0, le=2_147_483_647)
+    retry_once: bool = False
 
 
 class CommittedTransition(Model):
@@ -424,6 +652,17 @@ class InteractiveTransition(CommittedTransition):
     origin: Literal['agent', 'creator_observer', 'participant', 'environment']
     reason: str = ''
     command: dict
+    ruling: Ruling | None = None
+    observations: list[ObservationCondition] = Field(default_factory=list)
+
+    @model_serializer(mode='wrap')
+    def serialize(self, handler):
+        value = handler(self)
+        if self.ruling is None:
+            value.pop('ruling', None)
+        if not self.observations:
+            value.pop('observations', None)
+        return value
 
 
 class ForkTransition(InteractiveTransition):

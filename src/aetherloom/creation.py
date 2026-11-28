@@ -2,9 +2,10 @@
 
 import json
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 from .worlds import WorldRepository
 from .creation_models import inspect_document
+from .writing_locations import WRITING_KINDS, writing_location, writing_scope
 from . import canon
 from .canon_management import CanonManagementMixin, initialize as initialize_management, initialize_map_connections
 
@@ -22,9 +23,16 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
 
+def identified_sections(entity):
+    return [{**section, 'id': section.get('id') or str(uuid5(
+        NAMESPACE_URL, f"aetherloom:{entity['id']}:section:{index}"
+    ))} for index, section in enumerate(entity['sections'])]
+
+
 def record(row):
     result = dict(row)
-    for key in ('document', 'metadata', 'aliases', 'sections', 'core', 'typed_value', 'source', 'tags', 'linked_nodes', 'linked_entities'):
+    for key in ('document', 'metadata', 'aliases', 'sections', 'core', 'typed_value', 'source', 'tags',
+                'linked_nodes', 'linked_entities', 'assigned_nodes'):
         if key in result:
             result[key] = json.loads(result[key]) if result[key] is not None else None
     if 'map_connection' in result:
@@ -93,6 +101,7 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             conn.commit()
             from .material_sources import initialize as initialize_sources
             initialize_sources(conn)
+            conn.execute('BEGIN IMMEDIATE')
             conn.execute('''CREATE TABLE IF NOT EXISTS inspirations (
                 id TEXT PRIMARY KEY, world_id TEXT NOT NULL REFERENCES worlds(id),
                 title TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
@@ -101,6 +110,8 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
                 tags TEXT NOT NULL DEFAULT '[]',
                 linked_nodes TEXT NOT NULL DEFAULT '[]',
                 linked_entities TEXT NOT NULL DEFAULT '[]',
+                origin_node_id TEXT REFERENCES nodes(id),
+                assigned_nodes TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived')),
                 version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -108,8 +119,29 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             columns = {row[1] for row in conn.execute('PRAGMA table_info(inspirations)')}
             if 'tags' not in columns:
                 conn.execute("ALTER TABLE inspirations ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+            if 'origin_node_id' not in columns:
+                conn.execute('ALTER TABLE inspirations ADD COLUMN origin_node_id TEXT REFERENCES nodes(id)')
+            if 'assigned_nodes' not in columns:
+                conn.execute("ALTER TABLE inspirations ADD COLUMN assigned_nodes TEXT NOT NULL DEFAULT '[]'")
             conn.execute('CREATE INDEX IF NOT EXISTS inspirations_world_status ON inspirations(world_id,status,updated_at)')
+            conn.execute('''CREATE TABLE IF NOT EXISTS inspiration_versions (
+                inspiration_id TEXT NOT NULL REFERENCES inspirations(id),
+                version INTEGER NOT NULL, title TEXT NOT NULL, note TEXT NOT NULL,
+                status TEXT NOT NULL, tags TEXT NOT NULL, linked_nodes TEXT NOT NULL,
+                linked_entities TEXT NOT NULL, updated_at TEXT NOT NULL, assigned_nodes TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY(inspiration_id,version)
+            )''')
+            if 'assigned_nodes' not in {row[1] for row in conn.execute('PRAGMA table_info(inspiration_versions)')}:
+                conn.execute("ALTER TABLE inspiration_versions ADD COLUMN assigned_nodes TEXT NOT NULL DEFAULT '[]'")
             conn.execute('INSERT OR IGNORE INTO schema_migrations VALUES(7,CURRENT_TIMESTAMP)')
+            from .world_categories import initialize as initialize_categories
+            initialize_categories(conn)
+            from .periods import initialize as initialize_periods
+            initialize_periods(conn)
+            from .narrative import initialize as initialize_narrative
+            initialize_narrative(conn)
+            from .inspiration_adoptions import initialize as initialize_adoptions
+            initialize_adoptions(conn)
             conn.commit()
 
     def required(self, conn, table, identity):
@@ -269,13 +301,16 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
         with self.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
             self.writable_world(conn, world_id)
-            identity, timestamp = str(uuid4()), now()
-            conn.execute('INSERT INTO entities(id,world_id,name,kind,aliases,sections,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
-                         (identity,world_id,data['name'],data['kind'],encoded(data['aliases']),encoded(data['sections']),timestamp,timestamp))
-            canon.changed(conn, world_id, 'entity', identity, data)
-            conn.execute('UPDATE entities SET core=?,custom_type=? WHERE id=?',(encoded(data.get('core',{})),data.get('custom_type',''),identity))
-            self.save_snapshot(conn,'entity',identity)
-            return self.required(conn, 'entities', identity)
+            return self.insert_entity(conn, world_id, data)
+
+    def insert_entity(self, conn, world_id, data):
+        identity, timestamp = str(uuid4()), now()
+        conn.execute('INSERT INTO entities(id,world_id,name,kind,aliases,sections,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+                     (identity,world_id,data['name'],data['kind'],encoded(data['aliases']),encoded(data['sections']),timestamp,timestamp))
+        canon.changed(conn, world_id, 'entity', identity, data)
+        conn.execute('UPDATE entities SET core=?,custom_type=? WHERE id=?',(encoded(data.get('core',{})),data.get('custom_type',''),identity))
+        self.save_snapshot(conn,'entity',identity)
+        return self.required(conn, 'entities', identity)
 
     def update_entity(self, identity, data):
         with self.connection() as conn:
@@ -285,6 +320,19 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             self.expected(entity, data['version'])
             if entity.get('merged_into'):
                 raise CreationError('对象已合并，请编辑保留的目标对象。',409)
+            if 'sections' in data:
+                # Older clients may send only the title and body. Match stable
+                # existing sections by position/title or an unambiguous title.
+                previous = identified_sections(entity)
+                used = {section['id'] for section in data['sections'] if section.get('id')}
+                for index, section in enumerate(data['sections']):
+                    if section.get('id'):
+                        continue
+                    same = [entry for entry in previous if entry['title'] == section['title'] and entry['id'] not in used]
+                    aligned = previous[index] if index < len(previous) and previous[index] in same else None
+                    retained = aligned or (same[0] if len(same) == 1 else None)
+                    section['id'] = retained['id'] if retained else str(uuid4())
+                    used.add(section['id'])
             for key in ('name','kind','aliases','sections','status'):
                 data.setdefault(key,entity[key])
             from .object_schema import CORE_FIELDS
@@ -305,9 +353,15 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
     def entity_context(self, identity):
         with self.connection() as conn:
             entity = self.required(conn, 'entities', identity)
+            entity['sections'] = identified_sections(entity)
             entity['facts'] = [record(r) for r in conn.execute('SELECT * FROM assertions WHERE subject_id=? ORDER BY created_at', (identity,))]
+            anchors = {row['record_id']: (row['from_event_id'], row['to_event_id']) for row in conn.execute(
+                """SELECT p.* FROM canon_record_periods p JOIN assertions a ON a.id=p.record_id
+                   WHERE p.kind='assertion' AND a.subject_id=?""", (identity,))}
             for fact in entity['facts']:
                 fact['sources'] = [row[0] for row in conn.execute("SELECT candidate_id FROM canon_sources WHERE object_type='assertion' AND object_id=?", (fact['id'],))]
+                if fact['id'] in anchors:
+                    fact['from_event_id'], fact['to_event_id'] = anchors[fact['id']]
             from .material_sources import mention_ranges
             appearances = []
             for row in conn.execute('''SELECT DISTINCT n.* FROM nodes n JOIN mentions m
@@ -329,13 +383,18 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             self.writable_world(conn, entity['world_id'])
             if entity['status'] != 'active':
                 raise CreationError('请先恢复对象再编辑事实。', 409)
-            data = self.normalize_fact(conn,entity,data)
-            fact_id = str(uuid4())
-            conn.execute('INSERT INTO assertions(id,world_id,subject_id,predicate,value,object_id,valid_from,valid_until,source_note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                         (fact_id,entity['world_id'],identity,data['predicate'],data['value'],data['object_id'],data['valid_from'],data['valid_until'],data['source_note'],now()))
-            canon.changed(conn, entity['world_id'], 'assertion', fact_id, data)
-            conn.execute('UPDATE assertions SET field_id=?,value_type=?,typed_value=? WHERE id=?',(data.get('field_id'),data['value_type'],encoded(data['typed_value']),fact_id))
-            return self.save_snapshot(conn,'assertion',fact_id)
+            return self.insert_fact(conn, entity, data)
+
+    def insert_fact(self, conn, entity, data, *, from_event=None):
+        value = self.normalize_fact(conn, entity, data, new_object=data.get('new_object'))
+        identity = str(uuid4())
+        conn.execute('INSERT INTO assertions(id,world_id,subject_id,predicate,value,object_id,valid_from,valid_until,source_note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                     (identity,entity['world_id'],entity['id'],value['predicate'],value['value'],value['object_id'],value['valid_from'],value['valid_until'],value['source_note'],now()))
+        if from_event:
+            conn.execute("INSERT INTO canon_record_periods(kind,record_id,from_event_id) VALUES('assertion',?,?)", (identity,from_event))
+        canon.changed(conn, entity['world_id'], 'assertion', identity, {k: v for k, v in value.items() if k != 'new_object'})
+        conn.execute('UPDATE assertions SET field_id=?,value_type=?,typed_value=? WHERE id=?',(value.get('field_id'),value['value_type'],encoded(value['typed_value']),identity))
+        return self.save_snapshot(conn,'assertion',identity)
 
     def search(self, world_id, query):
         self.get(world_id)
@@ -379,12 +438,22 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
                 values.append(value)
         return values
 
-    def _inspiration(self, conn, identity):
+    def _inspiration(self, conn, identity, version=None):
         item = self.required(conn, 'inspirations', identity)
+        if version is not None and version != item['version']:
+            saved = conn.execute('''SELECT version,title,note,status,tags,linked_nodes,linked_entities,updated_at,assigned_nodes
+                FROM inspiration_versions WHERE inspiration_id=? AND version=?''', (identity, version)).fetchone()
+            if saved is None:
+                raise CreationError('未保存这个灵感版本。', 404)
+            item.update(record(saved))
         node_ids = item.get('linked_nodes', [])
         entity_ids = item.get('linked_entities', [])
         item['linked_node_ids'] = node_ids
         item['linked_entity_ids'] = entity_ids
+        item['assigned_node_ids'] = item['assigned_nodes']
+        item['assigned_nodes'] = [location for node in item['assigned_node_ids']
+                                  if (location := writing_location(conn, node))]
+        item['origin_node'] = writing_location(conn, item['origin_node_id']) if item['origin_node_id'] else None
         item['tags'] = item.get('tags', [])
         item['linked_nodes'] = [dict(row) for row in conn.execute('''SELECT n.id,n.title,n.work_id,w.title AS work_title,n.version,n.status
             FROM nodes n JOIN works w ON w.id=n.work_id WHERE n.id IN (%s) ORDER BY n.title,n.id''' %
@@ -407,14 +476,28 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             conn.execute('BEGIN IMMEDIATE')
             self.writable_world(conn, world_id)
             self._validate_inspiration_links(conn, world_id, linked_nodes, linked_entities)
+            origin_node_id = data.get('origin_node_id')
+            assigned = []
+            if origin_node_id:
+                location = writing_location(conn, origin_node_id)
+                if not location or location['world_id'] != world_id:
+                    raise CreationError('发起章幕必须属于当前世界。', 404)
+                eligible = location['kind'] in WRITING_KINDS and location['status'] == 'active'
+                if not eligible and origin == 'manual':
+                    raise CreationError('请从可编辑的章节、幕或场景记录灵感。', 409)
+                if eligible:
+                    assigned.append(origin_node_id)
             identity, timestamp = str(uuid4()), now()
-            conn.execute('''INSERT INTO inspirations(id,world_id,title,note,origin,source,tags,linked_nodes,linked_entities,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (identity, world_id, data['title'], data.get('note',''), origin,
-                encoded(source), encoded(tags), encoded(linked_nodes), encoded(linked_entities), timestamp, timestamp))
+            conn.execute('''INSERT INTO inspirations(id,world_id,title,note,origin,source,tags,linked_nodes,linked_entities,
+                                                    created_at,updated_at,origin_node_id,assigned_nodes)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''', (identity, world_id, data['title'], data.get('note',''), origin,
+                encoded(source), encoded(tags), encoded(linked_nodes), encoded(linked_entities), timestamp, timestamp,
+                origin_node_id, encoded(assigned)))
             return self._inspiration(conn, identity)
 
     def list_inspirations(self, world_id, *, query='', origin=None, status='active', node_id=None,
-                          worldline_id=None, character_id=None, location_id=None, tag=None, offset=0, limit=30):
+                          worldline_id=None, character_id=None, location_id=None, tag=None,
+                          placement=None, offset=0, limit=30):
         self.get(world_id)
         if status not in ('active', 'archived', 'all'):
             raise CreationError('灵感状态无效。')
@@ -432,6 +515,8 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
                 args.extend([pattern, pattern])
             if node_id:
                 where.append("EXISTS (SELECT 1 FROM json_each(linked_nodes) WHERE value=?)"); args.append(node_id)
+            if placement == 'unassigned':
+                where.append('json_array_length(assigned_nodes)=0')
             if worldline_id:
                 where.append("json_extract(source,'$.worldline_id')=?"); args.append(worldline_id)
             if character_id:
@@ -447,6 +532,23 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             rows = conn.execute('SELECT id FROM inspirations WHERE ' + clause + ' ORDER BY updated_at DESC,id LIMIT ? OFFSET ?', (*args, limit, offset)).fetchall()
             facets = self._inspiration_facets(conn, world_id, status)
             return dict(items=[self._inspiration(conn, row[0]) for row in rows], total=total, offset=offset, limit=limit, facets=facets)
+
+    def writing_inspirations(self, world_id, node_id, *, offset, limit):
+        with self.connection() as conn:
+            conn.execute('BEGIN')
+            location = writing_location(conn, node_id)
+            if not location or location['world_id'] != world_id or location['kind'] not in WRITING_KINDS:
+                raise CreationError('找不到此世界的章幕。', 404)
+            scope = writing_scope(conn, location)
+            where = '''world_id=? AND status='active' AND EXISTS (
+                SELECT 1 FROM json_each(inspirations.assigned_nodes) WHERE value IN (SELECT value FROM json_each(?)))'''
+            args = (world_id, encoded(scope))
+            total = conn.execute('SELECT count(*) FROM inspirations WHERE ' + where, args).fetchone()[0]
+            rows = conn.execute('SELECT id FROM inspirations WHERE ' + where + '''
+                ORDER BY EXISTS (SELECT 1 FROM json_each(inspirations.assigned_nodes) WHERE value=?) DESC,
+                         updated_at DESC,id LIMIT ? OFFSET ?''', (*args, node_id, limit, offset)).fetchall()
+            return dict(items=[self._inspiration(conn, row[0]) for row in rows], total=total, offset=offset,
+                        limit=limit, location=location, scope_node_ids=scope)
 
     def _inspiration_facets(self, conn, world_id, status='active'):
         args = [world_id]
@@ -482,6 +584,19 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
         with self.connection() as conn:
             return self._inspiration(conn, identity)
 
+    def inspiration_history(self, world_id, identity, version=None):
+        with self.connection() as conn:
+            conn.execute('BEGIN')
+            item = self.required(conn, 'inspirations', identity)
+            if item['world_id'] != world_id:
+                raise CreationError('找不到此世界的灵感。', 404)
+            if version is not None:
+                return self._inspiration(conn, identity, version)
+            current = {key: item[key] for key in ('version', 'title', 'status', 'updated_at')}
+            return [current, *(dict(row) for row in conn.execute(
+                '''SELECT version,title,status,updated_at FROM inspiration_versions
+                   WHERE inspiration_id=? ORDER BY version DESC''', (identity,)))]
+
     def update_inspiration(self, identity, data):
         with self.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -489,10 +604,25 @@ class CreationRepository(CanonManagementMixin, WorldRepository):
             self.writable_world(conn, item['world_id'])
             self.expected(item, data.pop('version'))
             values = dict(title=item['title'], note=item['note'], status=item['status'], tags=item.get('tags', []),
-                linked_nodes=item.get('linked_nodes', []), linked_entities=item.get('linked_entities', []))
+                linked_nodes=item['linked_nodes'], linked_entities=item['linked_entities'], assigned_nodes=item['assigned_nodes'])
             values.update({key: value for key, value in data.items() if value is not None})
             values['tags'] = self._normalize_inspiration_tags(values['tags'])
             self._validate_inspiration_links(conn, item['world_id'], values['linked_nodes'], values['linked_entities'])
-            conn.execute('''UPDATE inspirations SET title=?,note=?,tags=?,linked_nodes=?,linked_entities=?,status=?,version=version+1,updated_at=? WHERE id=?''',
-                (values['title'], values['note'], encoded(values['tags']), encoded(values['linked_nodes']), encoded(values['linked_entities']), values['status'], now(), identity))
+            assignments = values['assigned_nodes']
+            if len(set(assignments)) != len(assignments):
+                raise CreationError('分配位置不能重复。')
+            for node_id in set(assignments) - set(item['assigned_nodes']):
+                location = writing_location(conn, node_id)
+                if not location or location['world_id'] != item['world_id']:
+                    raise CreationError('分配位置必须属于当前世界。', 404)
+                if location['kind'] not in WRITING_KINDS or location['status'] != 'active':
+                    raise CreationError('请选择可编辑的章节、幕或场景。', 409)
+            conn.execute('''INSERT INTO inspiration_versions
+                (inspiration_id,version,title,note,status,tags,linked_nodes,linked_entities,updated_at,assigned_nodes)
+                SELECT id,version,title,note,status,tags,linked_nodes,linked_entities,updated_at,assigned_nodes
+                FROM inspirations WHERE id=?''', (identity,))
+            conn.execute('''UPDATE inspirations SET title=?,note=?,tags=?,linked_nodes=?,linked_entities=?,assigned_nodes=?,
+                status=?,version=version+1,updated_at=? WHERE id=?''',
+                (values['title'], values['note'], encoded(values['tags']), encoded(values['linked_nodes']),
+                 encoded(values['linked_entities']), encoded(assignments), values['status'], now(), identity))
             return self._inspiration(conn, identity)

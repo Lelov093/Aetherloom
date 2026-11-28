@@ -101,7 +101,7 @@ export function ReviewDetail({
     ? `${refName(p.subject_ref)} · ${proposalTitle(p)}`
     : proposalTitle(p);
   useWorkspaceTrail([
-    { label: "审阅收件箱", to: `/worlds/${world}/review` },
+    { label: "审阅收件箱", to: `/worlds/${world}/review/history` },
     { label: title },
   ]);
   return (

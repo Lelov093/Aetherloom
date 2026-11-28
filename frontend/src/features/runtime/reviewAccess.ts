@@ -2,21 +2,21 @@ import { runtimeRequest, RuntimeError, type HostSession } from './api';
 import type { SimulationSource } from '../review/api';
 
 let access: {world: string; session: Promise<HostSession | null>} | undefined;
-export async function runtimeReviewRequest<T>(world: string, path: string, method = 'GET', body?: unknown): Promise<T> {
+export async function runtimeReviewRequest<T>(world: string, path: string): Promise<T> {
   const connect = () => window.aetherloomRuntime!.session(world, 'creator_observer');
-  if (!window.aetherloomRuntime || !(await window.aetherloomRuntime.available())) throw new Error('新世界线审阅需要已启用的桌面宿主。');
+  if (!window.aetherloomRuntime || !(await window.aetherloomRuntime.available())) throw new Error('读取新世界线出处需要已启用的桌面宿主。');
   for (let attempt = 0; attempt < 2; attempt++) {
     if (!access || access.world !== world) access = {world, session: connect()};
     const selected = access;
     const session = await selected.session;
-    if (!session) throw new Error('无法建立创作者审阅授权。');
-    try { return await runtimeRequest<T>(session, path, undefined, method, body); }
+    if (!session) throw new Error('无法建立创作者读取授权。');
+    try { return await runtimeRequest<T>(session, path); }
     catch (e) {
       if (!(e instanceof RuntimeError) || e.status !== 401 || attempt) throw e;
       if (access === selected) access = undefined;
     }
   }
-  throw new Error('审阅授权已失效。');
+  throw new Error('读取授权已失效。');
 }
 
 export async function runtimeReviewList<T>(world: string, path = '/review'): Promise<T[]> {

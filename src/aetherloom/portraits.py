@@ -54,15 +54,16 @@ async def read_image(file: UploadFile):
             media_type = {'PNG':'image/png','JPEG':'image/jpeg','WEBP':'image/webp'}.get(image.format)
             if not media_type or max(image.size)>4096:
                 raise CreationError('图片格式须为 PNG、JPEG 或 WebP，宽高不超过4096像素。')
+            size = image.size
             image.verify()
     except (UnidentifiedImageError, OSError, ValueError, SyntaxError, Image.DecompressionBombError):
         raise CreationError('无法读取这张图片，请选择有效的 PNG、JPEG 或 WebP。')
-    return content, media_type
+    return content, media_type, size
 
 
 @router.post('/entities/{identity}/portrait')
 async def upload(identity: str, request: Request, file: UploadFile):
-    content, media_type = await read_image(file)
+    content, media_type, _ = await read_image(file)
     repo = request.app.state.creation
     with repo.connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -111,7 +112,7 @@ def writable_work(repo, conn, identity):
 
 @router.post('/works/{identity}/cover')
 async def upload_cover(identity: str, request: Request, file: UploadFile):
-    content, media_type = await read_image(file)
+    content, media_type, _ = await read_image(file)
     repo = request.app.state.creation
     with repo.connection() as conn:
         conn.execute('BEGIN IMMEDIATE')

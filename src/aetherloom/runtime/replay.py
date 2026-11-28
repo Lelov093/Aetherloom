@@ -14,6 +14,23 @@ def apply_effects(state, effects, *, inverse=False):
     operations = list(reversed(effects)) if inverse else effects
     for effect in operations:
         op = effect.op
+        if op == 'candidate_join':
+            entity = effect.entity_id
+            candidate = (result.candidates or {}).get(entity)
+            order = result.scheduler.ready_actor_order
+            if candidate is None:
+                raise RuntimeFault('op_precondition_failed')
+            if inverse:
+                if result.agents.get(entity) != candidate or not order or order[-1] != entity:
+                    raise RuntimeFault('op_precondition_failed')
+                result.agents.pop(entity)
+                order.pop()
+            else:
+                if entity in result.agents or entity in order:
+                    raise RuntimeFault('op_precondition_failed')
+                result.agents[entity] = candidate.model_copy(deep=True)
+                order.append(entity)
+            continue
         if op == 'agent_location_set':
             owner, attr = result.agents[effect.entity_id], 'location'
         elif op == 'agent_goal_set':
@@ -26,6 +43,10 @@ def apply_effects(state, effects, *, inverse=False):
             owner, attr = result.scheduler, 'pending_jobs'
         elif op == 'social_set':
             owner, attr = result, 'social'
+        elif op == 'pending_conflict_set':
+            owner, attr = result, 'pending_conflict'
+        elif op == 'waiting_set':
+            owner, attr = result.agents[effect.entity_id], 'waiting'
         elif op in ('belief_set', 'environment_set'):
             values = result.agents[effect.entity_id].beliefs if op == 'belief_set' else result.world.environment
             expected, value = (effect.after, effect.before) if inverse else (effect.before, effect.after)
@@ -41,13 +62,18 @@ def apply_effects(state, effects, *, inverse=False):
                 raise RuntimeFault('op_precondition_failed')
             result.world.items[effect.item_id] = value
             continue
-        elif op == 'knowledge_received':
-            known = result.agents[effect.entity_id].known
-            expected, value = (effect.after, effect.before) if inverse else (effect.before, effect.after)
-            if known.get(effect.record_id) != expected:
+        elif op in ('knowledge_received', 'premise_set'):
+            if op == 'premise_set' and result.premises is None:
                 raise RuntimeFault('op_precondition_failed')
-            if value is None: known.pop(effect.record_id, None)
-            else: known[effect.record_id] = value.model_copy(deep=True)
+            if op == 'knowledge_received':
+                values, key = result.agents[effect.entity_id].known, effect.record_id
+            else:
+                values, key = result.premises.resolved, effect.premise_id
+            expected, value = (effect.after, effect.before) if inverse else (effect.before, effect.after)
+            if values.get(key) != expected:
+                raise RuntimeFault('op_precondition_failed')
+            if value is None: values.pop(key, None)
+            else: values[key] = value.model_copy(deep=True)
             continue
         elif op == 'memory_append':
             memories = result.agents[effect.entity_id].memories
@@ -92,7 +118,7 @@ def apply_transition(state, raw):
     if (event.state_schema_version, event.event_schema_version, event.engine_version, event.ruleset_version, event.action_contract_version,
             event.hash_algorithm_version, event.scheduler_policy_version) != versions or event.state_schema_version != state.state_schema_version:
         raise RuntimeFault('unsupported_event_schema')
-    if not isinstance(event, InteractiveTransition) and any(op.op in ('insertion_advance', 'belief_set', 'plans_set', 'environment_set', 'jobs_set') or
+    if not isinstance(event, InteractiveTransition) and any(op.op in ('insertion_advance', 'belief_set', 'plans_set', 'environment_set', 'jobs_set', 'candidate_join', 'premise_set', 'pending_conflict_set', 'waiting_set') or
         (op.op == 'memory_append' and isinstance(op.evidence, SceneMemory)) for op in event.effects):
         raise RuntimeFault('unsupported_event_schema')
     if (event.world_id != state.world_id or event.worldline_id != state.worldline_id or event.seq != state.head_seq+1 or event.parent_seq != state.head_seq

@@ -2,15 +2,16 @@
 from copy import deepcopy
 
 from .interactive import perception
-from .domain import canonical
-from .contracts import READING_STATE
+from .contracts import PerceivedMemory, READING_STATE
 
 
 def participant_view(state, actor, opaque, event_meta):
     local = perception(state, actor)
     me = state.agents[actor]
     own = me.model_dump()
-    for record in own['known'].values(): record['source'] = {'reference': opaque(record['source'])}
+    for record in own['known'].values():
+        record['source'] = {'reference': opaque(record['source'])}
+        record.pop('original', None)
     for memory in own['memories']: memory['source'] = {'reference': opaque(memory['source'])}
     own['cooldowns'] = {}  # internal counters do not become a clock side channel
     if state.social:
@@ -31,12 +32,21 @@ def participant_view(state, actor, opaque, event_meta):
     # Its Source becomes an opaque reference above, never a global event sequence.
     agents = deepcopy(local['people'])
     agents[actor] = own
-    events = [{'event_id': opaque(memory.source.model_dump()), 'actor_id': memory.actor_id,
-               'action_type': memory.action_type, 'accepted': event_meta[canonical(memory.source.model_dump())]['accepted'],
-               'reason_code': event_meta[canonical(memory.source.model_dump())]['reason_code'], 'text': memory.text}
-              for memory in me.memories[-50:]]
+    events = []
+    for memory in me.memories[-50:]:
+        source = memory.source.model_dump()
+        meta = event_meta[memory.source.worldline_id, memory.source.seq]
+        event = dict(event_id=opaque(source), actor_id=memory.actor_id, action_type=memory.action_type,
+                     accepted=meta['accepted'], reason_code=meta['reason_code'], text=memory.text)
+        if isinstance(memory, PerceivedMemory):
+            event.update(channel=memory.channel, facts=memory.facts)
+        else:
+            event.update({key: meta[key] for key in ('message_kind', 'location_id', 'recipient_ids') if key in meta})
+        events.append(event)
     world = {'place_topology': {local['location']: local['exits']}, 'items': local['items'],
              'access_rules': [], 'environment': {}}
+    if state.world.perception is not None:
+        world.update(area=local['area'], speech_recipients=local['speech_recipients'])
     if state.state_schema_version == READING_STATE:
         world['readable_items'] = sorted(i for i in state.world.item_texts if state.world.items[i]==actor)
     return world, agents, events

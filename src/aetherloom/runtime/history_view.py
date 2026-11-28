@@ -2,12 +2,12 @@
 import json
 
 from .domain import RuntimeFault
-from .replay import apply_transition
+from . import transcript
 
 
 def timeline(store, conn, worldline, *, offset=0, limit=100, actor_id=None,
              location_id=None, action_type=None, min_tick=None, max_tick=None,
-             query=''):
+             query='', before_seq=None, guarded=False):
     worldline_row = conn.execute(
         'SELECT id,world_id,head_seq FROM runtime_v2_worldlines WHERE id=?',
         (worldline,),
@@ -21,44 +21,14 @@ def timeline(store, conn, worldline, *, offset=0, limit=100, actor_id=None,
         (worldline,),
     ).fetchone()[0]
     state = store._state(conn, worldline)
-    rows = conn.execute(
-        'SELECT payload FROM runtime_v2_journal WHERE worldline_id=? ORDER BY seq',
-        (worldline,),
-    ).fetchall()
+    last = state.head_seq if before_seq is None else min(state.head_seq, before_seq - 1)
+    backward_window = before_seq is not None and not any((actor_id, location_id, action_type, query)) and min_tick is None and max_tick is None
+    first = max(1, last - limit + 1) if backward_window else 1
     all_events = []
-    replay_state = store._read_at(conn, worldline, 0)
-    for payload_row in rows:
-        value = json.loads(payload_row['payload'])
-        command = value.get('command') or {}
-        args = command.get('args') or {}
-        event_location_id = (
-            replay_state.agents.get(value.get('actor_id')).location
-            if replay_state and value.get('actor_id') in replay_state.agents
-            else None
-        ) or (
-            args.get('place_id')
-            or args.get('destination_id')
-            or value.get('location_id')
-        )
-        text = value.get('text') or args.get('text') or args.get('speech') or ''
-        item = {
-            key: value.get(key)
-            for key in (
-                'event_id', 'seq', 'actor_id', 'action_type', 'accepted',
-                'reason_code', 'sim_time_before', 'sim_time_after', 'kind',
-            )
-        } | {
-            'location_id': event_location_id,
-            'text': text,
-            'source': {
-                'worldline_id': worldline,
-                'seq': value.get('seq'),
-                'event_id': value.get('event_id'),
-            },
-        }
+    for record in transcript.records(store, conn, worldline, first, last):
+        item = transcript.summary(*record, guarded=guarded)
+        item['source'] = dict(worldline_id=worldline, seq=item['seq'], event_id=item['event_id'])
         all_events.append(item)
-        if replay_state is not None:
-            replay_state = apply_transition(replay_state, value)
     filtered = [event for event in all_events if (
         (not actor_id or event.get('actor_id') == actor_id)
         and (not location_id or event.get('location_id') == location_id)
@@ -72,7 +42,7 @@ def timeline(store, conn, worldline, *, offset=0, limit=100, actor_id=None,
         'locations': _facet(all_events, 'location_id'),
         'actions': _facet(all_events, 'action_type'),
     }
-    events = filtered[offset:offset + limit]
+    events = filtered[-limit:] if before_seq is not None else filtered[offset:offset + limit]
     return {
         'worldline_id': worldline,
         'world_id': worldline_row['world_id'],

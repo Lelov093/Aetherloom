@@ -8,13 +8,14 @@ import sqlite3
 from pydantic import ValidationError
 from .contracts import INTERACTIVE_STATES
 from .contracts import (RuntimeAggregate as Aggregate, CommitReceipt as Receipt, CommittedTransition as Transition, ENGINE,
-    ActionIntent, InteractiveTransition, INTERACTIVE_STATE)
+    ActionIntent, AttemptRuling, ConflictRuling, InteractiveTransition, INTERACTIVE_STATE, RunSettings)
 from .domain import RuntimeFault, canonical, digest, invariants, resolve, state_hash
 from .replay import apply_effects, apply_transition
 
 from .schema import DDL, check_runtime
 from .baseline import FrozenBaseline
 from .interactive import resolve_interactive, ZERO_LIMIT, JOBS_PER_TICK
+from .execution import counts_for_segment, observation_targets, observations_for
 from . import history
 from .contracts import ForkTransition, FORK_STATE, ForkCoreTransition, FORK_CORE_STATE
 from .contracts import SocialTransition, SOCIAL_STATE, CognitiveTransition, COGNITIVE_STATE, ReadingTransition, READING_STATE
@@ -91,7 +92,8 @@ class RuntimeStore:
                 if previous is None:
                     conn.execute('INSERT INTO runtime_v2_baselines VALUES(?,?,?)', (baseline.baseline_id, baseline.world_id, manifest))
             conn.execute('INSERT INTO runtime_v2_worldlines VALUES(?,?,?,?,?,?,?,0)', (state.worldline_id, state.world_id, state.engine_version, blob, hashed, blob, hashed))
-            conn.execute('INSERT INTO runtime_v2_execution_control VALUES(?,0,?,?,?)', (state.worldline_id, 'paused', '',
+            conn.execute('INSERT INTO runtime_v2_execution_control VALUES(?,0,?,?,?)', (state.worldline_id, 'paused',
+                'conflict_pending' if state.pending_conflict else '',
                 canonical({'model_attempts': 0, 'reserved_units': 0, 'settled_units': 0})))
             if baseline is not None:
                 conn.execute('INSERT INTO runtime_v2_baseline_links VALUES(?,?)', (state.worldline_id, baseline.baseline_id))
@@ -173,8 +175,10 @@ class RuntimeStore:
                 worldline = row[0]
                 prior = conn.execute('SELECT status,reason FROM runtime_v2_execution_control WHERE worldline_id=?', (worldline,)).fetchone()
                 reason = ''
+                pending_conflict = False
                 try:
                     state = self._state(conn, worldline)
+                    pending_conflict = state.pending_conflict is not None
                     if state_hash(self._read_at(conn, worldline, use_checkpoint=False)) != state_hash(state):
                         raise RuntimeFault('checkpoint_corrupted')
                     if history.available(self):
@@ -195,18 +199,37 @@ class RuntimeStore:
                 except (RuntimeFault, ValidationError, ValueError, KeyError) as exc:
                     reason = str(exc)
                     self.diagnostics[worldline] = reason
-                pause_reason = reason or (prior['reason'] if prior and prior['status']=='paused' else '')
+                pause_reason = reason or ('conflict_pending' if pending_conflict else prior['reason'] if prior and prior['status']=='paused' else '')
                 conn.execute('UPDATE runtime_v2_execution_control SET epoch=epoch+1,status=?,reason=? WHERE worldline_id=?',
                              ('recovery_required' if reason else 'paused', pause_reason, worldline))
             conn.commit()
 
-    def control(self, worldline, resume=False):
+    def control(self, worldline, resume=False, *, reason=''):
         with self.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            self._state(conn, worldline)
+            state = self._state(conn, worldline)
             current = dict(conn.execute('SELECT * FROM runtime_v2_execution_control WHERE worldline_id=?', (worldline,)).fetchone())
             if current['status'] == 'recovery_required': raise RuntimeFault('checkpoint_corrupted')
-            conn.execute("UPDATE runtime_v2_execution_control SET epoch=epoch+1,status=?,reason='' WHERE worldline_id=?", ('running' if resume else 'paused', worldline))
+            if state.pending_conflict:
+                if resume:
+                    raise RuntimeFault('conflict_pending')
+                return current
+            if current['status'] == ('running' if resume else 'paused'):
+                return current
+            ledger = json.loads(current['ledger'])
+            if resume and 'run' not in ledger and (state.scheduler.pending_jobs or ledger.get('autonomy', {}).get('enabled')):
+                manifest = self.scenario(worldline, conn=conn)
+                if manifest and manifest.get('series_id') == 'authored-text':
+                    ledger['run'] = {'settings': RunSettings().model_dump(), 'used': 0}
+            if resume and 'run' in ledger:
+                ledger['run']['used'] = 0
+                stop_tick = ledger['run']['settings'].get('story_stop_tick')
+                if stop_tick is not None and state.sim_time_tick >= stop_tick:
+                    conn.execute("UPDATE runtime_v2_execution_control SET reason='story_time_limit',epoch=epoch+1 WHERE worldline_id=? AND reason<>'story_time_limit'", (worldline,))
+                    conn.commit()
+                    return self.control_state(worldline)
+            conn.execute('UPDATE runtime_v2_execution_control SET epoch=epoch+1,status=?,reason=?,ledger=? WHERE worldline_id=?',
+                         ('running' if resume else 'paused', '' if resume else reason, canonical(ledger), worldline))
             conn.commit()
             return self.control_state(worldline)
 
@@ -244,6 +267,10 @@ class RuntimeStore:
                 return Receipt(request_id=intent.request_id, intent_digest=intent_digest, status='idempotency_key_conflict')
             state = self._state(conn, intent.worldline_id)
             control = conn.execute('SELECT * FROM runtime_v2_execution_control WHERE worldline_id=?', (intent.worldline_id,)).fetchone()
+            ledger = json.loads(control['ledger'])
+            run = ledger.get('run')
+            settings = RunSettings.model_validate(run['settings']) if run else None
+            stop_tick = settings.story_stop_tick if settings and control['status'] == 'running' else None
             error = ('checkpoint_corrupted' if control['status'] == 'recovery_required' else
                      'world_identity_mismatch' if intent.world_id != state.world_id else
                      'epoch_invalid' if intent.execution_epoch != control['epoch'] else
@@ -252,15 +279,18 @@ class RuntimeStore:
             if not error:
                 try:
                     plan = resolve_interactive(state, intent)
+                    if stop_tick is not None and (state.sim_time_tick >= stop_tick or any(
+                        op.op == 'clock_advance' and op.after > stop_tick for op in plan.effects
+                    )):
+                        raise RuntimeFault('story_time_limit')
                     if state.state_schema_version in INTERACTIVE_STATES:
                         zero = not any(op.op == 'clock_advance' for op in plan.effects)
                         zero_count, scheduled_count = history.tick_counts(conn, state)
-                        if zero and zero_count >= ZERO_LIMIT:
+                        if zero and zero_count >= ZERO_LIMIT and intent.action_type != 'resolve_conflict':
                             raise RuntimeFault('zero_time_limit')
                         if intent.kind == 'scheduled_event' and scheduled_count >= JOBS_PER_TICK:
                             raise RuntimeFault('scheduled_tick_limit')
                         if worker and isinstance(intent, ActionIntent):
-                            ledger = json.loads(control['ledger'])
                             policy = ledger.get('autonomy', {})
                             if not policy.get('enabled') or intent.actor_id not in policy.get('actors', []) or policy.get('used', 0) >= policy.get('limit', 0):
                                 raise RuntimeFault('autonomy_budget_exhausted')
@@ -270,9 +300,23 @@ class RuntimeStore:
                 receipt = Receipt(request_id=intent.request_id, intent_digest=intent_digest, status=error)
                 conn.execute('INSERT INTO runtime_v2_receipts VALUES(?,?,?,?,?)', (intent.worldline_id,intent.request_id,intent_digest,subject,canonical(receipt.model_dump())))
                 conn.execute('INSERT INTO runtime_v2_audit(worldline_id,request_id,code) VALUES(?,?,?)', (intent.worldline_id,intent.request_id,error))
+                if error == 'story_time_limit':
+                    conn.execute("UPDATE runtime_v2_execution_control SET status='paused',reason=?,epoch=epoch+1 WHERE worldline_id=?",
+                                 (error, intent.worldline_id))
                 conn.commit()
                 return receipt
             after = apply_effects(state, plan.effects)
+            hits, stop_reason = [], ''
+            if run:
+                hits = observations_for(settings, intent, plan)
+                if control['status'] == 'running' and settings.mode == 'segment' and counts_for_segment(intent, plan):
+                    run['used'] += 1
+                    if run['used'] >= settings.segment_steps:
+                        stop_reason = 'segment_complete'
+                if stop_tick is not None and after.sim_time_tick == stop_tick:
+                    stop_reason = 'story_time_limit'
+                if any(hit.mode == 'pause' for hit in hits):
+                    stop_reason = 'observation_pause'
             event_id = 'evt_' + intent_digest.split(':')[1]
             model = ForkTransition if state.state_schema_version == FORK_STATE else InteractiveTransition if state.state_schema_version in INTERACTIVE_STATES else Transition
             if state.state_schema_version == SOCIAL_STATE: model = SocialTransition
@@ -280,8 +324,17 @@ class RuntimeStore:
             elif state.state_schema_version == COGNITIVE_STATE: model = CognitiveTransition
             if state.state_schema_version == FORK_CORE_STATE: model = ForkCoreTransition
             extra = {'kind': intent.kind, 'reason': getattr(intent, 'reason', ''), 'command':intent.model_dump()} if issubclass(model, InteractiveTransition) else {}
+            if hits:
+                extra['observations'] = hits
+            actor_id = intent.actor_id
+            if plan.ruling:
+                extra['ruling'] = plan.ruling
+                if isinstance(plan.ruling, AttemptRuling):
+                    actor_id = plan.ruling.attempt.actor_id
+                elif isinstance(plan.ruling, ConflictRuling):
+                    actor_id = plan.ruling.winner_id
             event = model(world_id=intent.world_id, subject=subject, worldline_id=intent.worldline_id, event_id=event_id, seq=after.head_seq, parent_seq=state.head_seq,
-                execution_epoch=control['epoch'], request_id=intent.request_id, intent_digest=intent_digest, actor_id=intent.actor_id,
+                execution_epoch=control['epoch'], request_id=intent.request_id, intent_digest=intent_digest, actor_id=actor_id,
                 action_type=intent.action_type, origin=origin, accepted=plan.accepted, reason_code=plan.reason_code,
                 before_hash=state_hash(state), after_hash=state_hash(after), sim_time_before=state.sim_time_tick,
                 sim_time_after=after.sim_time_tick, effects=plan.effects, created_at_utc=datetime.now(timezone.utc).isoformat(), **extra)
@@ -305,7 +358,13 @@ class RuntimeStore:
                 history.save_checkpoint(self, conn, after)
             if worker and isinstance(intent, ActionIntent):
                 ledger['autonomy']['used'] += 1
+            if run or worker and isinstance(intent, ActionIntent):
                 conn.execute('UPDATE runtime_v2_execution_control SET ledger=? WHERE worldline_id=?', (canonical(ledger), intent.worldline_id))
+            if state.pending_conflict != after.pending_conflict:
+                stop_reason = 'conflict_pending' if after.pending_conflict else 'conflict_resolved'
+            if stop_reason:
+                conn.execute("UPDATE runtime_v2_execution_control SET status='paused',reason=?,epoch=epoch+1 WHERE worldline_id=?",
+                             (stop_reason, intent.worldline_id))
             hook('after_outbox', conn)
             hook('before_commit', conn)
             conn.commit()
@@ -327,7 +386,35 @@ class RuntimeStore:
             conn.execute('UPDATE runtime_v2_execution_control SET epoch=epoch+1,ledger=? WHERE worldline_id=?', (canonical(ledger), worldline))
             conn.commit()
 
-    def pause_with_reason(self, worldline, reason):
+    def configure_run(self, worldline, settings, epoch):
         with self.connection() as conn:
-            conn.execute("UPDATE runtime_v2_execution_control SET status='paused',reason=?,epoch=epoch+1 WHERE worldline_id=?", (reason, worldline))
+            conn.execute('BEGIN IMMEDIATE')
+            state = self._state(conn, worldline)
+            if state.state_schema_version not in INTERACTIVE_STATES:
+                raise RuntimeFault('interactive_worldline_required')
+            control = conn.execute('SELECT * FROM runtime_v2_execution_control WHERE worldline_id=?', (worldline,)).fetchone()
+            if control['status'] == 'recovery_required':
+                raise RuntimeFault('checkpoint_corrupted')
+            if control['epoch'] != epoch:
+                raise RuntimeFault('stale_view')
+            if control['status'] != 'paused':
+                raise RuntimeFault('pause_before_run_settings')
+            ledger = json.loads(control['ledger'])
+            previous = (ledger.get('run') or {}).get('settings', {}).get('observations', [])
+            targets = observation_targets(state)
+            targets['scheduled'].update(row['target_id'] for row in previous if row['event'] == 'scheduled')
+            if (len({row.id for row in settings.observations}) != len(settings.observations)
+                or any(row.target_id not in targets[row.event] for row in settings.observations)):
+                raise RuntimeFault('invalid_observation_target')
+            ledger['run'] = {'settings': settings.model_dump(), 'used': 0}
+            conn.execute('UPDATE runtime_v2_execution_control SET ledger=?,epoch=epoch+1 WHERE worldline_id=?',
+                         (canonical(ledger), worldline))
+            conn.commit()
+
+    def pause_with_reason(self, worldline, reason, *, epoch=None, seq=None):
+        with self.connection() as conn:
+            conn.execute('''UPDATE runtime_v2_execution_control SET status='paused',reason=?,epoch=epoch+1
+                            WHERE worldline_id=? AND status='running' AND (? IS NULL OR epoch=?) AND
+                            (? IS NULL OR ?=(SELECT head_seq FROM runtime_v2_worldlines WHERE id=?))''',
+                         (reason, worldline, epoch, epoch, seq, seq, worldline))
             conn.commit()

@@ -6,24 +6,30 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { ViewerPreferences } = require('./viewer-preferences.cjs');
+const { registerWorkspaceExport } = require('./workspace-export.cjs');
 
 const root = path.resolve(__dirname, '../..');
+const desktopLogPath = path.join(root, '.logs', 'desktop-service.log');
 let service;
 let quitting = false;
 let tray, serviceOrigin, quittingRequest = false;
 app.setName('Aetherloom');
 // Development shell state belongs to this project, not a global Electron profile.
 app.setPath('userData', process.env.AETHERLOOM_DESKTOP_DATA || path.join(root, '.data', 'desktop'));
-if (!app.requestSingleInstanceLock()) app.quit();
+const stopRequested = process.argv.includes('--aetherloom-stop');
+const focusRequested = process.argv.includes('--aetherloom-focus');
+if (!app.requestSingleInstanceLock({ root, stopRequested })) app.quit();
+else if (stopRequested || focusRequested) app.exit(focusRequested ? 2 : 0);
 else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, _commandLine, _cwd, request) => {
+    if (request?.stopRequested) {
+      if (request.root === root) app.quit();
+      return;
+    }
     const win = BrowserWindow.getAllWindows()[0];
     if (win) showWindow(win);
   });
-  app.whenReady().then(start).catch(error => {
-    dialog.showErrorBox('Aetherloom 无法启动', error.message);
-    app.quit();
-  });
+  app.whenReady().then(start).catch(handleStartupFailure);
 }
 
 function showWindow(win) {
@@ -53,18 +59,19 @@ async function start() {
   serviceOrigin = origin;
   const vnextEnabled = process.env.AETHERLOOM_VNEXT_ENABLED === '1';
   const hostSecret = randomBytes(32).toString('hex');
-  mkdirSync(path.join(root, '.logs'), { recursive: true });
-  const log = openSync(path.join(root, '.logs', 'desktop-service.log'), 'a');
+  mkdirSync(path.dirname(desktopLogPath), { recursive: true });
+  const log = openSync(desktopLogPath, 'a');
   service = spawn(python, ['-m', 'uvicorn', 'aetherloom.api:app', '--host', '127.0.0.1', '--port', String(port)], {
     cwd: root, env: { ...process.env, PYTHONUNBUFFERED: '1',
       AETHERLOOM_VNEXT_HOST_ORIGIN: origin, AETHERLOOM_VNEXT_HOST_SECRET: hostSecret }, stdio: ['ignore', log, log], windowsHide: true,
   });
   closeSync(log);
   let failure;
+  let windowReady = false;
   service.on('error', error => { failure = error; });
-  service.on('exit', code => {
-    failure = new Error(`本地服务已退出（${code}）。详情见 .logs/desktop-service.log。`);
-    if (!quitting && BrowserWindow.getAllWindows().length) {
+  service.on('exit', (code, signal) => {
+    failure = new Error(`本地服务已退出（${code ?? signal}）。详情见 .logs/desktop-service.log。`);
+    if (!quitting && windowReady && BrowserWindow.getAllWindows().length) {
       dialog.showErrorBox('本地服务已停止', '已保存的世界仍保存在本机。请重开应用后继续。');
       app.quit();
     }
@@ -86,6 +93,7 @@ async function start() {
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') },
   });
   win.on('page-title-updated', event => event.preventDefault());
+  registerWorkspaceExport(win, origin, hostSecret);
   let activeSession, activeIdentity;
   const viewerPreferences = new ViewerPreferences(app.getPath('userData'));
   const exploreViewDirectory = path.join(app.getPath('userData'), 'explore-views');
@@ -115,11 +123,12 @@ async function start() {
     return operation;
   });
   let sessionQueue = Promise.resolve();
-  ipcMain.handle('runtime:session', (event, { world, role, worldline, actor } = {}) => {
+  ipcMain.handle('runtime:session', (event, { world, role, worldline, actor, spoilerFree = false } = {}) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame ||
         new URL(event.senderFrame.url).origin !== origin) throw new Error('Untrusted runtime caller');
     if (!vnextEnabled) return null;
     if (typeof world !== 'string' || !world || !['creator_observer', 'observer', 'participant'].includes(role)) throw new Error('Invalid scope');
+    if (typeof spoilerFree !== 'boolean') throw new Error('Invalid viewing preference');
     if (role === 'participant' && (process.env.AETHERLOOM_VNEXT_INTERACTIVE !== '1' || typeof worldline !== 'string' || typeof actor !== 'string')) throw new Error('Invalid participant binding');
     sessionQueue = sessionQueue.catch(() => {}).then(async () => {
       if (activeSession) {
@@ -130,7 +139,8 @@ async function start() {
       }
       const response = await fetch(`${origin}/api/v2/session`, { method: 'POST', headers: {
         'Content-Type': 'application/json', 'X-Aetherloom-Host': hostSecret,
-      }, body: JSON.stringify({ world_id: world, role, ...(role === 'participant' ? {worldline_id:worldline,actor_id:actor} : {}) }) });
+      }, body: JSON.stringify({ world_id: world, role, spoiler_free: spoilerFree,
+        ...(role === 'participant' ? {worldline_id:worldline,actor_id:actor} : {}) }) });
       if (!response.ok) throw new Error('Runtime session unavailable');
       const result = await response.json();
       activeSession = result.token;
@@ -190,9 +200,56 @@ async function start() {
     else { quitting = false; quittingRequest = false; }
   });
   await win.loadURL(origin);
+  if (failure) throw failure;
   showWindow(win);
+  windowReady = true;
   console.log(`Aetherloom renderer: ${origin}`);
   console.log(`Aetherloom desktop window: ${win.isVisible() ? 'visible' : 'hidden'}`);
+}
+
+async function pauseRuntime() {
+  const response = await fetch(`${serviceOrigin}/api/runtime/pause-all`, { method: 'POST', signal: AbortSignal.timeout(8000) });
+  if (!response.ok) throw new Error('暂停服务未完成');
+}
+
+function isServiceRunning() {
+  return Boolean(service?.pid && service.exitCode === null && service.signalCode === null);
+}
+
+function closeDesktop() {
+  quitting = true;
+  tray?.destroy();
+  if (isServiceRunning()) {
+    // The Windows venv redirector can have a Python child, so stop the owned process tree.
+    if (process.platform === 'win32') spawn('taskkill', ['/PID', String(service.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    else service.kill();
+  }
+}
+
+async function handleStartupFailure(error) {
+  quitting = true;
+  const message = error?.message || String(error);
+  const entry = `[${new Date().toISOString()}] [desktop startup] ${error?.stack || message}`;
+  console.error(entry);
+  try {
+    await fs.mkdir(path.dirname(desktopLogPath), { recursive: true });
+    await fs.appendFile(desktopLogPath, `${entry}\n`, 'utf8');
+  } catch (logError) {
+    console.error('无法写入 .logs/desktop-service.log。', logError);
+  }
+  if (isServiceRunning()) {
+    try {
+      await pauseRuntime();
+    } catch (pauseError) {
+      console.error('启动失败后未能暂停本地服务。', pauseError);
+    }
+  }
+  try {
+    closeDesktop();
+    dialog.showErrorBox('Aetherloom 无法启动', message);
+  } finally {
+    app.exit(1);
+  }
 }
 
 app.on('window-all-closed', () => { if(quitting)app.quit(); });
@@ -201,23 +258,14 @@ app.on('before-quit',event=>{
   event.preventDefault();if(quittingRequest)return;quittingRequest=true;
   (async()=>{
     try {
-      const response=await fetch(`${serviceOrigin}/api/runtime/pause-all`,{method:'POST',signal:AbortSignal.timeout(8000)});
-      if(!response.ok)throw new Error('暂停服务未完成');
+      await pauseRuntime();
       quitting=true;app.quit();
     } catch {
       quittingRequest=false;
-      if(service?.exitCode!==null){quitting=true;app.quit();return;}
+      if(!isServiceRunning()){quitting=true;app.quit();return;}
       const win=BrowserWindow.getAllWindows()[0];if(win)showWindow(win);
       dialog.showErrorBox('暂停保存未完成','本地服务尚未确认暂停。应用保持打开，请稍后再试；不会在未确认时直接退出。');
     }
   })();
 });
-app.on('will-quit', () => {
-  quitting = true;
-  tray?.destroy();
-  if (service && service.exitCode === null) {
-    // Windows venv redirectors can have an actual Python child: stop our whole owned tree.
-    if(process.platform==='win32')spawn('taskkill',['/PID',String(service.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});
-    else service.kill();
-  }
-});
+app.on('will-quit', closeDesktop);

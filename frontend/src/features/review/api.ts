@@ -230,6 +230,10 @@ export interface RelationshipState {
   strength:number|null;
   source_note:string;
   map_connection?:boolean;
+  from_event_id?: string | null;
+  to_event_id?: string | null;
+  from_event_title?: string | null;
+  to_event_title?: string | null;
 }
 export interface CanonRelationship {
   id: string;

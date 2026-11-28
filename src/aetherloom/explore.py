@@ -1,4 +1,4 @@
-"""Read-only, bounded Canon neighbourhoods. Display state is never world state."""
+"""Read-only Canon relationship overviews and bounded neighbourhoods."""
 import json
 from typing import Literal
 
@@ -8,6 +8,7 @@ from . import canon
 from .creation import CreationError, record
 from .object_catalog import item
 from .object_schema import CORE_FIELDS
+from .periods import PeriodView, StoryMoment, anchored_records, card_fields, visible_keys
 from .story_year import register, validate_range, timing
 
 router = APIRouter(prefix='/api/worlds/{world}/explore')
@@ -23,15 +24,25 @@ GRAPH = """WITH objects AS (
 ), raw_edges AS (
  SELECT 'relationship:'||s.id AS id,'entity:'||r.subject_id AS source,
  'entity:'||r.object_id AS target,'relationship' AS family,'relationship' AS record_type,
- s.id AS record_id,s.label,s.valid_from,s.valid_until,s.strength,s.version,
+ s.id AS record_id,s.label,
+ CASE WHEN p.from_event_id IS NULL THEN s.valid_from ELSE se.valid_from END AS valid_from,
+ CASE WHEN p.to_event_id IS NULL THEN s.valid_until ELSE ee.valid_until END AS valid_until,s.strength,s.version,
  s.description,s.source_note,'' AS metadata
  FROM relationship_states s JOIN temporal_relationships r ON r.id=s.relationship_id
+ LEFT JOIN canon_record_periods p ON p.kind='relationship' AND p.record_id=s.id
+ LEFT JOIN canon_events se ON se.id=p.from_event_id AND se.status='active'
+ LEFT JOIN canon_events ee ON ee.id=p.to_event_id AND ee.status='active'
  WHERE r.world_id=:world AND r.merged_into IS NULL AND r.status='active' AND s.status='active'
  AND (NOT :map_view OR s.map_connection=1)
- UNION ALL SELECT 'assertion:'||id,'entity:'||subject_id,'entity:'||object_id,
- 'assertion','assertion',id,predicate,valid_from,valid_until,NULL,version,
- value,source_note,'' FROM assertions
- WHERE world_id=:world AND status='active' AND object_id IS NOT NULL
+ UNION ALL SELECT 'assertion:'||f.id,'entity:'||f.subject_id,'entity:'||f.object_id,
+ 'assertion','assertion',f.id,f.predicate,
+ CASE WHEN p.from_event_id IS NULL THEN f.valid_from ELSE se.valid_from END,
+ CASE WHEN p.to_event_id IS NULL THEN f.valid_until ELSE ee.valid_until END,NULL,f.version,
+ f.value,f.source_note,'' FROM assertions f
+ LEFT JOIN canon_record_periods p ON p.kind='assertion' AND p.record_id=f.id
+ LEFT JOIN canon_events se ON se.id=p.from_event_id AND se.status='active'
+ LEFT JOIN canon_events ee ON ee.id=p.to_event_id AND ee.status='active'
+ WHERE f.world_id=:world AND f.status='active' AND f.object_id IS NOT NULL
  UNION ALL SELECT 'participation:'||e.id||':'||p.entity_id,'entity:'||p.entity_id,'event:'||e.id,
  'participation','event',e.id,'参与',e.valid_from,e.valid_until,NULL,e.version,
  '',e.source_note,e.metadata FROM canon_events e JOIN event_participants p ON p.event_id=e.id
@@ -47,8 +58,12 @@ GRAPH = """WITH objects AS (
 ), edges AS (
  SELECT r.* FROM raw_edges r JOIN objects a ON a.key=r.source JOIN objects b ON b.key=r.target
  WHERE r.family IN (SELECT value FROM json_each(:families))
+ AND (:label='' OR (r.family='relationship' AND r.label=:label))
+ AND (:direction!='outgoing' OR r.target!=:focus OR r.source=:focus)
+ AND (:direction!='incoming' OR r.source!=:focus OR r.target=:focus)
  AND (a.key=:focus OR :kinds='[]' OR a.kind IN (SELECT value FROM json_each(:kinds)))
  AND (b.key=:focus OR :kinds='[]' OR b.kind IN (SELECT value FROM json_each(:kinds)))
+ AND (:as_of IS NULL OR r.record_type || ':' || r.record_id IN (SELECT value FROM json_each(:as_of)))
  AND story_match(r.valid_from,r.valid_until,:lower,:upper)!='outside'
  AND (:uncertain OR story_match(r.valid_from,r.valid_until,:lower,:upper)='dated')
 ) """
@@ -72,13 +87,28 @@ def graph_node(repo, conn, world, key, depth):
     return dict(**ref, key=key, depth=depth, version=value['version'])
 
 
+def graph_edge(row, timed):
+    value = dict(row)
+    if value['family'] == 'participation':
+        role = json.loads(value['metadata']).get('participant_roles', {}).get(value['source'].split(':', 1)[1])
+        value['label'] = f'参与 · {role}' if role else '参与'
+    for field in ('metadata', 'description', 'source_note'):
+        value.pop(field)
+    if timed:
+        value['time_uncertain'] = timing(value['valid_from'], value['valid_until'])['certainty'] != 'dated'
+    return value
+
+
 @router.get('/graph')
-def neighbourhood(world: str, request: Request, focus: str = '', hops: int = Query(1, ge=1, le=2),
+def neighbourhood(world: str, request: Request, moment: StoryMoment, focus: str = '', hops: int = Query(1, ge=1, le=2),
                   expanded: str = '', families: str = ','.join(FAMILIES), kinds: str = '',
                   limit: int = Query(60, ge=5, le=120),
                   year_start: int | None = Query(None, ge=-999999, le=999999),
                   year_end: int | None = Query(None, ge=-999999, le=999999), uncertain: bool = True,
-                  event_id: str = '', projection: Literal['relationship', 'map'] = 'relationship'):
+                  event_id: str = '', projection: Literal['relationship', 'map'] = 'relationship',
+                  scope: Literal['neighborhood', 'world'] = 'neighborhood',
+                  direction: Literal['any', 'outgoing', 'incoming'] = 'any',
+                  label: str = Query('', max_length=160)):
     repo = request.app.state.creation
     repo.get(world)
     validate_range(year_start, year_end)
@@ -86,16 +116,33 @@ def neighbourhood(world: str, request: Request, focus: str = '', hops: int = Que
     if set(selected) - set(FAMILIES):
         raise CreationError('联系类别无效。', 400)
     map_view = projection == 'map'
+    world_view = scope == 'world' and not map_view
     selected_kinds = ['location'] if map_view else [k for k in kinds.split(',') if k]
     if map_view:
         selected = ['relationship']
     extra = list(dict.fromkeys(k for k in expanded.split(',') if k))
     if len(extra) > 20:
         raise CreationError('请先收起部分分支，再继续展开。', 400)
+    timed = not moment and (year_start is not None or year_end is not None)
+    params = dict(world=world, families=json.dumps(selected), kinds=json.dumps(selected_kinds),
+                  lower=year_start, upper=year_end, uncertain=uncertain, map_view=map_view,
+                  label='' if map_view else label.strip(), direction='any' if map_view or world_view else direction,
+                  as_of=None)
     with repo.connection() as conn:
         conn.execute('BEGIN')
         register(conn)
         revision = canon.revision(conn, world)
+        if moment:
+            view = PeriodView(conn, world, moment)
+            params.update(as_of=json.dumps(visible_keys(conn, world, view)), lower=None, upper=None, uncertain=True)
+        if world_view:
+            edges = [graph_edge(row, timed) for row in conn.execute(
+                GRAPH + 'SELECT * FROM edges ORDER BY family,id', {**params, 'focus': ''}
+            )]
+            keys = {edge[end] for edge in edges for end in ('source', 'target')}
+            nodes = [graph_node(repo, conn, world, key, 1) for key in sorted(keys)]
+            return dict(focus='', requested_focus='', revision=revision, nodes=nodes, edges=edges,
+                        remaining_links=0, expanded=[])
         requested = focus
         if map_view and event_id:
             location = conn.execute("""SELECT a.id FROM canon_events e JOIN entities a ON a.id=e.location_id
@@ -120,8 +167,7 @@ def neighbourhood(world: str, request: Request, focus: str = '', hops: int = Que
             focus = row[0] if row else ''
         if not focus:
             return dict(focus='', requested_focus=requested, revision=revision, nodes=[], edges=[], remaining_links=0, expanded=[])
-        params = dict(world=world, focus=focus, families=json.dumps(selected), kinds=json.dumps(selected_kinds),
-                      lower=year_start, upper=year_end, uncertain=uncertain, map_view=map_view)
+        params['focus'] = focus
         depths = {focus: 0}
         visited, edges = set(), {}
 
@@ -136,18 +182,11 @@ def neighbourhood(world: str, request: Request, focus: str = '', hops: int = Que
             for row in rows:
                 if len(edges) >= 240:
                     break
-                value = dict(row)
-                for key in (value['source'], value['target']):
+                for key in (row['source'], row['target']):
                     if key not in depths and len(depths) < limit:
                         depths[key] = depth
-                if value['source'] in depths and value['target'] in depths and len(edges) < 240:
-                    if value['family'] == 'participation':
-                        role = json.loads(value['metadata']).get('participant_roles', {}).get(value['source'].split(':', 1)[1])
-                        value['label'] = f'参与 · {role}' if role else '参与'
-                    value.pop('metadata')
-                    value.pop('description')
-                    value.pop('source_note')
-                    edges[value['id']] = value
+                if row['source'] in depths and row['target'] in depths:
+                    edges[row['id']] = graph_edge(row, timed)
 
         expand([focus], 1)
         if hops == 2:
@@ -161,21 +200,11 @@ def neighbourhood(world: str, request: Request, focus: str = '', hops: int = Que
         params['visible'] = json.dumps(sorted(depths))
         context = conn.execute(GRAPH + 'SELECT * FROM edges WHERE source IN (SELECT value FROM json_each(:visible)) AND target IN (SELECT value FROM json_each(:visible)) ORDER BY family,id LIMIT 241', params).fetchall()
         for row in context:
-            value = dict(row)
-            if value['id'] in edges or len(edges) >= 240:
-                continue
-            if value['family'] == 'participation':
-                role = json.loads(value['metadata']).get('participant_roles', {}).get(value['source'].split(':', 1)[1])
-                value['label'] = f'参与 · {role}' if role else '参与'
-            for field in ('metadata', 'description', 'source_note'):
-                value.pop(field)
-            edges[value['id']] = value
+            if row['id'] not in edges and len(edges) < 240:
+                edges[row['id']] = graph_edge(row, timed)
         params['frontier'] = json.dumps(sorted(visited))
         total = conn.execute(GRAPH + 'SELECT count(*) FROM edges WHERE source IN (SELECT value FROM json_each(:frontier)) OR target IN (SELECT value FROM json_each(:frontier)) OR (source IN (SELECT value FROM json_each(:visible)) AND target IN (SELECT value FROM json_each(:visible)))', params).fetchone()[0]
         nodes = [graph_node(repo, conn, world, key, depth) for key, depth in depths.items()]
-        if year_start is not None or year_end is not None:
-            for edge in edges.values():
-                edge['time_uncertain'] = timing(edge['valid_from'], edge['valid_until'])['certainty'] != 'dated'
         return dict(focus=focus, requested_focus=requested, revision=revision, nodes=nodes,
                     edges=list(edges.values()), remaining_links=max(0, total-len(edges)), expanded=sorted(visited))
 
@@ -192,7 +221,7 @@ def source_links(repo, conn, world, kind, identity):
 
 
 @router.get('/detail/{kind}/{identity}')
-def detail(world: str, kind: Literal['entity', 'assertion', 'event', 'relationship'], identity: str, request: Request):
+def detail(world: str, kind: Literal['entity', 'assertion', 'event', 'relationship'], identity: str, request: Request, moment: StoryMoment):
     repo = request.app.state.creation
     repo.get(world)
     with repo.connection() as conn:
@@ -218,14 +247,20 @@ def detail(world: str, kind: Literal['entity', 'assertion', 'event', 'relationsh
         facts, settings = [], []
         if kind == 'entity':
             title = value['name']
-            settings = [dict(label=CORE_FIELDS[value['kind']].get(k, k), text=v) for k, v in value['core'].items() if v]
-            settings += [dict(label=s['title'], text=s['body']) for s in value['sections'] if s['body']]
-            for row in conn.execute("SELECT * FROM assertions WHERE subject_id=? AND status='active' ORDER BY predicate,id", (identity,)):
-                fact = record(row)
+            if moment:
+                view = PeriodView(conn, world, moment)
+                settings = [dict(label=item['label'], text=item['value']) for item in card_fields(conn,value,view) if item['value']]
+                relevant_facts = anchored_records(conn,value,view,'assertion')
+            else:
+                settings = [dict(label=CORE_FIELDS[value['kind']].get(k, k), text=v) for k, v in value['core'].items() if v]
+                settings += [dict(label=s['title'], text=s['body']) for s in value['sections'] if s['body']]
+                relevant_facts = [record(row) for row in conn.execute(
+                    "SELECT * FROM assertions WHERE subject_id=? AND status='active' ORDER BY predicate,id", (identity,))]
+            for fact in relevant_facts:
                 fact['sources'] = source_links(repo, conn, world, 'assertion', fact['id'])
                 facts.append(fact)
-                if row['object_id']:
-                    reference('entity:' + row['object_id'], '正式事实引用')
+                if fact['object_id']:
+                    reference('entity:' + fact['object_id'], '正式事实引用')
             if value['kind'] == 'location':
                 for event_row in conn.execute("SELECT id FROM canon_events WHERE world_id=? AND location_id=? AND status='active' ORDER BY valid_from,id", (world, identity)):
                     reference('event:' + event_row['id'], '关联事件')

@@ -5,6 +5,25 @@ from . import review
 from .domain import RuntimeFault
 
 
+def frozen_sources(world, line, seq, manifest):
+    path = f'/worlds/{quote(world, safe="")}/create/source?'
+    return [
+        dict(title=material['title'], work_title=material['work_title'], version=material['version'],
+             purpose=material['purpose'], route=path + urlencode(dict(worldline=line, index=index, seq=seq)))
+        for index, material in enumerate(manifest.get('materials', []))
+    ]
+
+
+def material_references(materials):
+    if not materials:
+        return []
+    return [
+        '## 冻结资料', '',
+        *(f'- {material["work_title"]} / {material["title"]} · v{material["version"]} · '
+          f'`{material["route"]}`' for material in materials), '',
+    ]
+
+
 def export(store, world, line, seq):
     review.require(store)
     with store.connection() as conn:
@@ -12,29 +31,33 @@ def export(store, world, line, seq):
         conn.execute('BEGIN')
         if store.identity(line)['world_id'] != world:
             raise RuntimeFault('scope_mismatch')
-        event, _, after, manifest, baseline, _, _, text = review.evidence(
+        event, before, after, manifest, baseline, names, _, text = review.evidence(
             store, conn, line, seq, require_accepted=False)
-        title = (manifest or {}).get('title') or '世界线观察'
-        route = f'/worlds/{quote(world, safe="")}/simulate/runtime?' + urlencode(dict(line=line, seq=seq))
-        roles = {item['id']: item.get('name', item['id']) for item in (manifest or {}).get('setup', {}).get('roles', [])}
-        places = {item['id']: item.get('name', item['id']) for item in (manifest or {}).get('setup', {}).get('places', [])}
+        manifest = manifest or {}
+        title = manifest.get('title') or '世界线观察'
+        route = f'/worlds/{quote(world, safe="")}/simulate?' + urlencode(dict(line=line, seq=seq))
+        setup = manifest.get('setup', {})
+        materials = frozen_sources(world, line, seq, manifest)
+        actor_id = event.get('actor_id')
+        actor = before.agents.get(actor_id)
+        location_id = event.get('location_id') or (actor.location if actor else None)
         source = dict(world_id=world, worldline_id=line, seq=seq, event_id=event['event_id'],
             baseline_id=after.baseline_id, canon_revision=baseline['canon_revision'],
             logical_tick=after.sim_time_tick, accepted=event['accepted'], action_type=event['action_type'], route=route,
-            actor_id=event.get('actor_id'), actor_name=roles.get(event.get('actor_id'), event.get('actor_id')),
-            location_id=event.get('location_id'), location_name=places.get(event.get('location_id'), event.get('location_id')))
+            actor_id=actor_id, actor_name=names.get(actor_id, actor_id),
+            location_id=location_id, location_name=names.get(location_id, location_id))
         markdown = '\n'.join([
             f'# {title} · 第{seq}步观察', '',
-            '这是创作观察笔记，不是正式设定；保存或导出不写入 Canon。', '',
-            '## 来源', '', *(f'- {key}: {value}' for key, value in source.items()),
+            '创作观察笔记 · 用于保存灵感与写作参考。', '',
+            '## 来源', '', *(f'- {key}: {value}' for key, value in source.items() if key != 'route'),
             f'- 工作区定位（应用内路径）: {route}', '',
-            '来源固定在上述世界线与已提交事件；当前作品修改不会重写该来源。', '',
+            *material_references(materials),
             '## 当时记录', '', text, '',
             '## 我的创作想法', '', '可在这里记录值得保留的情境、疑问或改编方向。', '',
-            '## 后续决定', '', '是否改写作品、保存灵感或提出正式设定候选，由创作者另行决定。', '',
         ])
         return dict(filename=f'aetherloom-observation-{seq}-{event["event_id"]}.md',
-            markdown=markdown, summary=text, source=source)
+            markdown=markdown, summary=text, source=source, materials=materials,
+            origin_node_id=setup.get('origin_node_id'))
 
 
 def export_many(store, world, line, seqs):
@@ -49,13 +72,14 @@ def export_many(store, world, line, seqs):
     title = '批量世界线观察'
     markdown = '\n'.join([
         f'# {title}', '',
-        '这是创作观察笔记，不是正式设定；保存或导出不写入 Canon。', '',
+        '创作观察笔记 · 用于保存灵感与写作参考。', '',
         '## 来源事件', '',
         *[f'- 第{event["seq"]}步 · {event.get("actor_name") or event.get("actor_id")} · {event.get("location_name") or "地点未知"}' for event in events], '',
+        *material_references(first['materials']),
         '## 当时记录', '',
         *[f'### 第{event["seq"]}步\n\n{event["summary"]}\n' for event in events],
         '## 我的创作想法', '', '可在这里记录值得保留的情境、疑问或改编方向。', '',
-        '## 后续决定', '', '是否改写作品、保存灵感或提出正式设定候选，由创作者另行决定。', '',
     ])
     return dict(filename=f'aetherloom-observation-batch-{line}-{selected[0]}-{selected[-1]}.md',
-        markdown=markdown, summary='\n\n'.join(event['summary'] for event in events), source=source)
+        markdown=markdown, summary='\n\n'.join(event['summary'] for event in events), source=source,
+        materials=first['materials'], origin_node_id=first['origin_node_id'])

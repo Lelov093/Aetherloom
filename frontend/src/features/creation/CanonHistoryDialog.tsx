@@ -59,8 +59,10 @@ export function CanonHistoryDialog({
   );
   function show(key: string, value: unknown): React.ReactNode {
     if (value == null || value === "") return "未填写";
-    if (["subject_id", "object_id", "location_id", "merged_into"].includes(key))
+    if (["subject_id", "object_id", "location_id", "merged_into", "entity_id"].includes(key))
       return identity(value);
+    if (["event_id", "from_event_id", "to_event_id"].includes(key))
+      return <Link className="text-link" to={`/worlds/${world}/create/records?event=${encodeURIComponent(String(value))}`}>查看关联事件 →</Link>;
     if (key === "sources" && Array.isArray(value))
       return value.length
         ? value.map((v) => (
@@ -107,9 +109,8 @@ export function CanonHistoryDialog({
       {items?.map((item) => (
         <details key={item.version} className="canon-history-item">
           <summary>
-            版本 {item.version} · {item.saved_at || "历史时间未知"} ·{" "}
-            {stateNames[String(item.payload.status)] ||
-              String(item.payload.status)}
+            版本 {item.version} · {item.saved_at || "历史时间未知"}
+            {typeof item.payload.status === 'string' && ` · ${stateNames[item.payload.status] || item.payload.status}`}
           </summary>
           <dl>
             {Object.entries(item.payload)
@@ -125,11 +126,12 @@ export function CanonHistoryDialog({
                     "value_type",
                     "typed_value",
                     "relationship_id",
+                    "target",
                   ].includes(key),
               )
               .map(([key, value]) => (
                 <div key={key}>
-                  <dt>{historyLabels[key] || key}</dt>
+                  <dt>{kind === 'setting_state' && key === 'label' ? '资料项' : historyLabels[key] || key}</dt>
                   <dd>{show(key, value)}</dd>
                 </div>
               ))}
@@ -185,6 +187,10 @@ const historyLabels: Record<string, string> = {
   metadata: "事件结构",
   participants: "参与者",
   label: "关系状态",
+  event_id: "生效事件",
+  from_event_id: "开始事件",
+  to_event_id: "结束事件",
+  entity_id: "对象",
   strength: "关系强度",
   map_connection: "地图连通",
   relationship_id: "稳定关系",

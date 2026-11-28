@@ -1,5 +1,6 @@
 import { request, type CanonHistory, type Fact } from '../creation/api';
 import type { ObjectRef } from '../objects/api';
+import { storyParams, withMoment, type StoryMoment } from '../periods/api';
 
 export const familyNames = { relationship: '正式关系', assertion: '对象引用', participation: '事件参与', location: '事件地点', cause: '事件因果' };
 export type Family = keyof typeof familyNames;
@@ -50,14 +51,23 @@ export interface Detail {
   states: { id: string; label: string; valid_from: string | null; valid_until: string | null; status: string; version: number }[];
   history: CanonHistory[];
 }
-export interface GraphQuery { focus: string; hops: number; expanded: string[]; families: Family[]; kinds: string[]; limit: number; range?: YearRange; uncertain?: boolean; eventId?: string; projection: 'relationship' | 'map' }
+export type RelationDirection = 'any' | 'outgoing' | 'incoming';
+export interface GraphQuery {
+  focus: string; hops: number; expanded: string[]; families: Family[]; kinds: string[]; limit: number;
+  range?: YearRange; uncertain?: boolean; eventId?: string; projection: 'relationship' | 'map';
+  scope?: 'neighborhood' | 'world'; direction?: RelationDirection; label?: string;
+  moment?: StoryMoment;
+}
 export const exploreApi = {
   graph: (world: string, query: GraphQuery) => request<ExploreGraph>(`/worlds/${world}/explore/graph?${new URLSearchParams({
     focus: query.focus, hops: String(query.hops), expanded: query.expanded.join(','), families: query.families.join(','), kinds: query.kinds.join(','), limit: String(query.limit), event_id: query.eventId || '', projection: query.projection,
+    scope: query.scope ?? 'neighborhood', direction: query.direction ?? 'any', label: query.label ?? '',
     ...yearParams(query.range, query.uncertain),
+    ...storyParams(query.moment),
   })}`),
   timeline: (world: string, focus: string, range: YearRange, layers: TimeLayer[], uncertain: boolean, section: string, offset: number, locate = '', relationship = '') => request<TimelinePage>(`/worlds/${world}/explore/timeline?${new URLSearchParams({ focus, relationship, layers: layers.join(','), ...yearParams(range, uncertain), section, offset: String(offset), locate, limit: section === 'placed' ? '120' : '40' })}`),
-  detail: (world: string, kind: string, id: string) => request<Detail>(`/worlds/${world}/explore/detail/${kind}/${id}`),
+  detail: (world: string, kind: string, id: string, moment?: StoryMoment) =>
+    request<Detail>(withMoment(`/worlds/${world}/explore/detail/${kind}/${id}`, moment)),
 };
 export function period(value: { valid_from?: string | null; valid_until?: string | null }) {
   return value.valid_from || value.valid_until ? `${value.valid_from || '起始未知'} → ${value.valid_until || '结束未知'}` : '故事时间未注明';

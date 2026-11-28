@@ -14,8 +14,12 @@ from aetherloom.imports import router as import_router
 from aetherloom.review import ReviewRepository
 from aetherloom.review_api import router as review_router
 from aetherloom.object_catalog import router as catalog_router
+from aetherloom.world_categories import router as category_router
 from aetherloom.content_context import router as context_router
 from aetherloom.material_sources import router as source_router
+from aetherloom.narrative import router as narrative_router
+from aetherloom.inspiration_adoptions import router as adoption_router
+from aetherloom.workspace_export_api import export_router
 from aetherloom.content_library import router as library_router
 from aetherloom.provider import CompatibleProvider, ProviderSettings
 from aetherloom.extraction import ExtractionService
@@ -23,7 +27,9 @@ from aetherloom.simulation_service import SimulationService
 from aetherloom.simulation_api import router as simulation_router
 from aetherloom.portraits import router as portrait_router, initialize as initialize_portraits
 from aetherloom.explore import router as explore_router
+from aetherloom.author_maps import router as map_router, initialize as initialize_maps
 from aetherloom.timeline import router as timeline_router
+from aetherloom.periods import router as periods_router
 from aetherloom.runtime.service import RuntimeOptions, RuntimeService
 from aetherloom.runtime.routing import WorldlineRouter
 from aetherloom.runtime.projection import ProjectionHost
@@ -77,6 +83,7 @@ def create_app(db_path: Path | None = None, provider=None, *, runtime_options: R
         app.state.worlds = WorldRepository(path)
         app.state.creation = ReviewRepository(path)
         initialize_portraits(app.state.creation)
+        initialize_maps(app.state.creation)
         app.state.extraction = ExtractionService(app.state.creation, provider or CompatibleProvider(ProviderSettings.load(ROOT)))
         app.state.simulation = SimulationService(path)
         app.state.worldline_router = (WorldlineRouter(app.state.simulation.repo, app.state.vnext)
@@ -114,13 +121,19 @@ def create_app(db_path: Path | None = None, provider=None, *, runtime_options: R
     app.include_router(import_router)
     app.include_router(review_router)
     app.include_router(catalog_router)
+    app.include_router(category_router)
     app.include_router(context_router)
     app.include_router(source_router)
+    app.include_router(narrative_router)
+    app.include_router(adoption_router)
+    app.include_router(export_router(secret))
     app.include_router(library_router)
     app.include_router(simulation_router)
     app.include_router(portrait_router)
     app.include_router(explore_router)
+    app.include_router(map_router)
     app.include_router(timeline_router)
+    app.include_router(periods_router)
 
     @app.exception_handler(CreationError)
     async def creation_error(request: Request, error: CreationError):

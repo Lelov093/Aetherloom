@@ -4,8 +4,8 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Request, Query
-from pydantic import Field, model_validator
-from .creation_models import Model, inspect_document
+from pydantic import Field, UUID4, model_validator
+from .creation_models import EntityCreate, EntityKind, Model, inspect_document
 
 router = APIRouter(prefix='/api')
 TargetKind = Literal['entity', 'assertion', 'event', 'relationship']
@@ -53,12 +53,12 @@ def visible_node(repo, conn, node):
     return work, active
 
 
-def mention_ranges(document):
+def mention_ranges(document, mark_type='entityMention', attribute='entityId'):
     """Offsets follow the same text projection as inspect_document, never a name search."""
     def walk(part):
         if part['type'] == 'text':
             text = part['text']
-            return text, [(mark['attrs']['entityId'], 0, len(text)) for mark in part.get('marks', []) if mark['type'] == 'entityMention']
+            return text, [(mark['attrs'][attribute], 0, len(text)) for mark in part.get('marks', []) if mark['type'] == mark_type]
         if part['type'] == 'hardBreak':
             return '\n', []
         text, ranges = '', []
@@ -111,22 +111,39 @@ def label_and_link(repo, conn, kind, item):
     return f"{a['name']} → {b['name']} · {item['label']}", f"{base}/records?tab=relations&relationship={item['id']}"
 
 
-def describe(repo, conn, row, detail=False):
-    value = dict(row)
+def describe_passage(repo, conn, value, detail=False):
     node = repo.required(conn, 'nodes', value['node_id'])
     work, visible = visible_node(repo, conn, node)
     history = conn.execute('SELECT * FROM content_versions WHERE node_id=? AND version=?', (node['id'], value['source_version'])).fetchone()
     text = inspect_document(json.loads(history['document']))[0]
+    passage = dict(title=history['title'], work_title=work['title'], work_id=work['id'],
+                   current_version=node['version'], stale=node['version'] != value['source_version'],
+                   source_archived=not visible,
+                   quote=text[value['start']:value['end']] if detail else text[value['start']:min(value['end'], value['start'] + 160)])
+    if detail:
+        passage.update(text=text, metadata=json.loads(history['metadata']))
+    return passage
+
+
+def describe(repo, conn, row, detail=False):
+    value = dict(row)
     item = target(repo, conn, value['object_type'], value['object_id'])
     label, to = label_and_link(repo, conn, value['object_type'], item)
-    value.update(title=history['title'], work_title=work['title'], work_id=work['id'],
-                 current_version=node['version'], stale=node['version'] != value['source_version'],
-                 source_archived=not visible, target_status=item['status'], target_label=label, target_to=to,
-                 quote=text[value['start']:value['end']] if detail else text[value['start']:min(value['end'], value['start'] + 160)],
+    value.update(describe_passage(repo, conn, value, detail), target_status=item['status'], target_label=label, target_to=to,
                  to=f"/worlds/{value['world_id']}/create/sources/{value['id']}")
-    if detail:
-        value.update(text=text, metadata=json.loads(history['metadata']))
     return value
+
+
+def describe_frozen_material(source, node, *, identity, target_to, target_label):
+    version = source['version']
+    saved = source['content_version']
+    return dict(id=identity, node_id=source['node_id'], title=source['title'],
+                work_id=source['work_id'], work_title=source['work_title'],
+                source_version=version, current_version=node['version'], metadata=saved['metadata'],
+                text=inspect_document(saved['document'])[0], start=source['start'], end=source['end'],
+                scope='fragment', note='本次模拟冻结的资料引用；不随当前正文变化。',
+                stale=node['version'] != version, status='active', source_archived=node['status'] != 'active',
+                target_to=target_to, target_label=target_label)
 
 
 def list_sources(repo, conn, kind, identity):
@@ -134,10 +151,9 @@ def list_sources(repo, conn, kind, identity):
         "SELECT * FROM material_sources WHERE object_type=? AND object_id=? AND status='active' ORDER BY created_at,id", (kind, identity))]
 
 
-class SourceInput(Model):
+class SourceRange(Model):
     node_id: str
     source_version: int = Field(ge=1)
-    target_version: int = Field(ge=1)
     scope: Literal['document', 'fragment'] = 'document'
     start: int | None = Field(default=None, ge=0)
     end: int | None = Field(default=None, ge=0)
@@ -150,6 +166,87 @@ class SourceInput(Model):
         if self.scope == 'document' and (self.start is not None or self.end is not None):
             raise ValueError('整份资料关联不接受片段范围。')
         return self
+
+
+class SourceInput(SourceRange):
+    target_version: int = Field(ge=1)
+
+
+class ObjectFromSource(SourceRange):
+    scope: Literal['fragment'] = 'fragment'
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+    request_id: UUID4
+    name: str = Field(min_length=1, max_length=160)
+    kind: EntityKind = 'concept'
+    mode: Literal['source', 'excerpt', 'setting'] = 'source'
+    setting: str = Field(default='', max_length=200000)
+
+    @model_validator(mode='after')
+    def setting_mode(self):
+        if bool(self.setting) != (self.mode == 'setting'):
+            raise ValueError('整理为设定时请输入作者说明。')
+        return self
+
+
+def checked_material(repo, conn, world, body):
+    node = repo.required(conn, 'nodes', body.node_id)
+    work, visible = visible_node(repo, conn, node)
+    if work['world_id'] != world:
+        error('来源必须属于同一世界。', 400)
+    if not visible:
+        error('请先恢复来源文档及其作品、父目录。')
+    repo.expected(node, body.source_version)
+    text = node['plain_text']
+    start, end = (0, len(text)) if body.scope == 'document' else (body.start, body.end)
+    if end > len(text) or not text[start:end].strip():
+        error('来源范围无效或只有空白，请重新选择。', 400)
+    return node, start, end
+
+
+def insert_source(repo, conn, identity, world, kind, item_id, node, body, start, end):
+    conn.execute('''INSERT INTO material_sources(id,world_id,object_type,object_id,original_object_id,node_id,source_version,scope,start,end,note)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+        (identity, world, kind, item_id, item_id, node['id'], node['version'], body.scope, start, end, body.note))
+    return describe(repo, conn, conn.execute('SELECT * FROM material_sources WHERE id=?', (identity,)).fetchone())
+
+
+def source_object_data(body, text):
+    data = EntityCreate(name=body.name, kind=body.kind).model_dump()
+    if body.mode == 'excerpt':
+        if len(text) > 200000:
+            error('原文摘录过长。请选择更短的原文片段，或仅绑定出处。', 400)
+        data['sections'] = [{'title': '原文摘录', 'body': text}]
+    elif body.mode == 'setting':
+        data['sections'] = [{'title': '设定说明', 'body': body.setting}]
+    return data
+
+
+@router.post('/worlds/{world}/material-objects', status_code=201)
+def create_source_object(world: str, body: ObjectFromSource, request: Request):
+    repo = request.app.state.creation
+    identity = str(body.request_id)
+    with repo.connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        repo.writable_world(conn, world)
+        previous = conn.execute('SELECT * FROM material_sources WHERE id=?', (identity,)).fetchone()
+        if previous:
+            if tuple(previous[key] for key in ('world_id', 'object_type', 'scope', 'node_id', 'source_version', 'start', 'end', 'note')) != (
+                    world, 'entity', 'fragment', body.node_id, body.source_version, body.start, body.end, body.note):
+                error('这次建卡已提交，请重新选择原文后再建卡。')
+            source = describe(repo, conn, previous, detail=True)
+            saved = conn.execute('''SELECT payload FROM canon_object_versions
+                WHERE object_type='entity' AND object_id=? AND version=1''', (previous['original_object_id'],)).fetchone()
+            data = source_object_data(body, source['quote'])
+            initial = json.loads(saved['payload']) if saved else {}
+            if any(initial.get(key) != data[key] for key in ('name', 'kind', 'sections')):
+                error('这次建卡已提交，请重新选择原文后再建卡。')
+            return dict(object=repo.required(conn, 'entities', previous['object_id']), source=source)
+        node, start, end = checked_material(repo, conn, world, body)
+        data = source_object_data(body, node['plain_text'][start:end])
+        item = repo.insert_entity(conn, world, data)
+        source = insert_source(repo, conn, identity, world, 'entity', item['id'], node, body, start, end)
+        return dict(object=item, source=source)
 
 
 @router.get('/material-targets/{kind}/{identity}/sources')
@@ -174,25 +271,12 @@ def attach(kind: TargetKind, identity: str, body: SourceInput, request: Request)
             subject = repo.required(conn, 'entities', item['subject_id'])
             if subject['status'] != 'active' or subject.get('merged_into'):
                 error('请先恢复事实所属对象，再关联资料。')
-        node = repo.required(conn, 'nodes', body.node_id)
-        work, visible = visible_node(repo, conn, node)
-        if work['world_id'] != item['world_id']:
-            error('来源必须属于同一世界。', 400)
-        if not visible:
-            error('请先恢复来源文档及其作品、父目录。')
-        repo.expected(node, body.source_version)
-        text = node['plain_text']
-        start, end = (0, len(text)) if body.scope == 'document' else (body.start, body.end)
-        if end > len(text) or not text[start:end].strip():
-            error('来源范围无效或只有空白，请重新选择。', 400)
+        node, start, end = checked_material(repo, conn, item['world_id'], body)
         duplicate = conn.execute("SELECT * FROM material_sources WHERE object_type=? AND object_id=? AND node_id=? AND source_version=? AND scope=? AND start=? AND end=? AND note=? AND status='active'",
                                  (kind, identity, node['id'], node['version'], body.scope, start, end, body.note)).fetchone()
         if duplicate:
             return describe(repo, conn, duplicate)
-        source_id = str(uuid4())
-        conn.execute('''INSERT INTO material_sources(id,world_id,object_type,object_id,original_object_id,node_id,source_version,scope,start,end,note)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (source_id, item['world_id'], kind, identity, identity, node['id'], node['version'], body.scope, start, end, body.note))
-        return describe(repo, conn, conn.execute('SELECT * FROM material_sources WHERE id=?', (source_id,)).fetchone())
+        return insert_source(repo, conn, str(uuid4()), item['world_id'], kind, identity, node, body, start, end)
 
 
 @router.get('/worlds/{world}/material-sources/{identity}')

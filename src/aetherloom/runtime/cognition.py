@@ -6,7 +6,7 @@ import json
 import re
 from threading import RLock
 
-from .contracts import CognitionSource, ObservationSource, READING_STATE
+from .contracts import CognitionSource, ObservationSource, PerceivedMemory, READING_STATE
 from .domain import RuntimeFault, canonical
 from .interactive import perception
 
@@ -84,6 +84,8 @@ def build_context(state, actor, *, strategy='recent12', query='', index=None, bu
         ref = 'memory:' + str(i)
         sources[ref] = CognitionSource(kind='memory', key=str(i), source=memory.source).model_dump()
         records.append({'ref': ref, 'text': memory.text, 'basis': memory.basis, 'action_type': memory.action_type, 'actor_id': memory.actor_id})
+        if isinstance(memory, PerceivedMemory):
+            records[-1].update(channel=memory.channel, facts=memory.facts, evidence_type='event_observation')
         if state.state_schema_version == READING_STATE:
             from .grounding import evidence_type
             records[-1]['evidence_type'] = evidence_type(memory)
@@ -97,6 +99,10 @@ def build_context(state, actor, *, strategy='recent12', query='', index=None, bu
         body['reading'] = dict(readable_items=sorted(item for item in state.world.item_texts if state.world.items[item]==actor),
                                comparison_sources=sorted(knowledge))
     body['action_options'] = action_options(body)
+    from .premises import expression_options
+    expression = expression_options(state, actor)
+    if expression['past'] or expression['basis']:
+        body['expression'] = expression
     if profile is not None: body['profile'] = deepcopy(profile)
     if state.social:
         from .social import view
@@ -268,7 +274,8 @@ def action_options(body):
     options = dict(move=list(local['exits']),
                 take=sorted(k for k, holder in local['items'].items() if holder == local['location']),
                 transfer=dict(items=sorted(k for k, holder in local['items'].items() if holder == actor),
-                              recipients=sorted(a for a in local['people'] if a != actor)),
+                              recipients=sorted(a for a, person in local['people'].items()
+                                                if a != actor and person['location'] == local['location'])),
                 observe=['location', 'exits', 'people', 'items'])
     if 'reading' in body:
         options.update(read=body['reading']['readable_items'],compare=body['reading']['comparison_sources'])

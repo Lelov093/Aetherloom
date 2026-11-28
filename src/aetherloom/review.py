@@ -462,7 +462,11 @@ class ReviewRepository(CreationRepository):
                 event['participants'] = [r[0] for r in conn.execute('SELECT entity_id FROM event_participants WHERE event_id=?',(event['id'],))]
             relations = [dict(r) for r in conn.execute('SELECT * FROM temporal_relationships WHERE world_id=? AND merged_into IS NULL',(world_id,))]
             for relation in relations:
-                relation['states'] = [record(r) for r in conn.execute('SELECT * FROM relationship_states WHERE relationship_id=?',(relation['id'],))]
+                relation['states'] = [record(r) for r in conn.execute('''SELECT s.*,
+                    p.from_event_id,p.to_event_id,se.title AS from_event_title,ee.title AS to_event_title
+                    FROM relationship_states s LEFT JOIN canon_record_periods p ON p.kind='relationship' AND p.record_id=s.id
+                    LEFT JOIN canon_events se ON se.id=p.from_event_id LEFT JOIN canon_events ee ON ee.id=p.to_event_id
+                    WHERE s.relationship_id=? ORDER BY s.created_at,s.id''',(relation['id'],))]
             if entity_id:
                 events = [e for e in events if entity_id in e['participants'] or entity_id == e['location_id']]
                 relations = [r for r in relations if entity_id in (r['subject_id'],r['object_id'])]

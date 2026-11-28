@@ -6,9 +6,9 @@ import { EntityMark } from '../../components/EntityMark';
 import { Portrait } from '../objects/Portrait';
 import { entityKinds } from '../creation/api';
 import { type ExploreNode, type ExploreGraph } from './api';
-import { arrange, groupEdges, type CanvasSelection, type EdgeGroup, type Selection } from './graphModel';
+import { arrange, arrangeOverview, groupEdges, type CanvasSelection, type EdgeGroup, type Selection } from './graphModel';
 
-type NodeData = { item: ExploreNode; focus: boolean; highlighted: boolean; expanded: boolean; portrait?: number; onExpand: (key: string) => void };
+type NodeData = { item: ExploreNode; focus: boolean; highlighted: boolean; expanded: boolean; portrait?: number; onExpand?: (key: string) => void };
 type GraphNode = Node<NodeData, 'world'>;
 type EdgeData = { group: EdgeGroup; highlighted: boolean; labels: boolean; reveal: boolean; bend: number; onSelect: (extend: boolean) => void };
 type GraphEdge = Edge<EdgeData, 'relation'>;
@@ -22,7 +22,7 @@ const WorldNode = memo(function WorldNode({ data, selected }: NodeProps<GraphNod
     </span>)}
     <div className="world-node-emblem">{item.kind === 'character' && data.portrait ? <Portrait id={item.id} name={item.label} version={data.portrait}/> : item.type === 'event' ? <ScrollText size={27} strokeWidth={1.5}/> : <EntityMark kind={item.kind}/>}</div>
     <strong title={item.label}>{item.label}</strong><small>{item.type === 'event' ? '正式事件' : entityKinds[item.kind] || item.kind}</small>
-    <button className="world-node-expand nodrag nopan" type="button" disabled={data.expanded} aria-label={`展开${item.label}的联系`} title={data.expanded ? '此节点已展开' : '继续展开联系'} onClick={e => { e.stopPropagation(); data.onExpand(item.key); }}><Plus size={13}/></button>
+    {data.onExpand && <button className="world-node-expand nodrag nopan" type="button" disabled={data.expanded} aria-label={`展开${item.label}的联系`} title={data.expanded ? '此节点已展开' : '继续展开联系'} onClick={e => { e.stopPropagation(); data.onExpand?.(item.key); }}><Plus size={13}/></button>}
   </div>;
 });
 
@@ -53,7 +53,7 @@ const nodeTypes = { world: WorldNode }, edgeTypes = { relation: RelationEdge };
 interface Props {
   graph?: ExploreGraph; loading: boolean; labels: boolean; connectionsVisible: boolean; selection?: Selection; portraits: Record<string, number>;
   picks?: CanvasSelection[];
-  view?: 'relationship' | 'map';
+  view: 'overview' | 'relationship' | 'map';
   positions: Record<string, XYPosition>; viewport?: Viewport; restore: number;
   onSelect: (selection?: CanvasSelection, extend?: boolean) => void; onFocus: (key: string) => void; onExpand: (key: string) => void;
   onSnapshot: (positions: Record<string, XYPosition>, viewport: Viewport) => void;
@@ -61,6 +61,8 @@ interface Props {
 function Canvas(props: Props) {
   const { graph, selection, loading, onSnapshot, connectionsVisible } = props;
   const mapView = props.view === 'map';
+  const overview = props.view === 'overview';
+  const minZoom = overview ? .05 : .25;
   const [nodes, setNodes] = useState<GraphNode[]>([]), [hover, setHover] = useState('');
   const [zoom, setZoom] = useState(1);
   const flow = useReactFlow<GraphNode, GraphEdge>(), current = useRef(''), restoring = useRef(-1);
@@ -71,7 +73,22 @@ function Canvas(props: Props) {
   const nodesRef = useRef(nodes); nodesRef.current = nodes;
   const host = useRef<HTMLDivElement>(null);
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const groups = useMemo(() => graph && connectionsVisible ? groupEdges(graph) : [], [graph, connectionsVisible]);
+  const { groups, bends } = useMemo(() => {
+    const groups = graph && connectionsVisible ? groupEdges(graph) : [];
+    const pairs = new Map<string, EdgeGroup[]>();
+    for (const group of groups) {
+      const pair = [group.source, group.target].sort().join('|');
+      if (!pairs.has(pair)) pairs.set(pair, []);
+      pairs.get(pair)!.push(group);
+    }
+    const bends = new Map<string, number>();
+    for (const parallel of pairs.values()) {
+      parallel.forEach((group, index) => {
+        if (parallel.length > 1) bends.set(group.id, (index - (parallel.length - 1) / 2) * 90 * (group.source < group.target ? 1 : -1));
+      });
+    }
+    return { groups, bends };
+  }, [graph, connectionsVisible]);
   const activePicks = props.picks ?? (selection && selection.type !== 'record' ? [selection] : []);
   const selectedNodes = new Set(activePicks.filter(pick => pick.type === 'node').map(pick => pick.key));
   const selectedEdges = new Set(activePicks.filter(pick => pick.type === 'edge').map(pick => pick.key));
@@ -79,53 +96,62 @@ function Canvas(props: Props) {
   const related = new Set(groups.filter(g => selectedEdges.has(g.id) || g.source === highlight || g.target === highlight).flatMap(g => [g.source, g.target]));
   function capture() { snapshot.current(Object.fromEntries(nodesRef.current.map(n => [n.id, n.position])), viewportRef.current || flow.getViewport()); }
   function fittedViewport() {
-    const positions = nodesRef.current.map(n => n.position), box = host.current?.getBoundingClientRect();
-    if (!positions.length || !box) return { x: 0, y: 0, zoom: 1 };
-    const x = Math.min(...positions.map(p => p.x)), y = Math.min(...positions.map(p => p.y)) - 10;
-    return getViewportForBounds({ x, y, width: Math.max(...positions.map(p => p.x)) - x + 128, height: Math.max(...positions.map(p => p.y)) - y + 140 }, box.width, box.height, .25, 1, .16);
+    const box = host.current?.getBoundingClientRect();
+    if (!nodesRef.current.length || !box) return { x: 0, y: 0, zoom: 1 };
+    let x = Infinity, y = Infinity, right = -Infinity, bottom = -Infinity;
+    for (const { position } of nodesRef.current) {
+      x = Math.min(x, position.x);
+      y = Math.min(y, position.y - 10);
+      right = Math.max(right, position.x + 128);
+      bottom = Math.max(bottom, position.y + 140);
+    }
+    return getViewportForBounds({ x, y, width: right - x, height: bottom - y }, box.width, box.height, minZoom, 1, .16);
   }
   function fit() {
     const value = fittedViewport(); viewportRef.current = value;
     return flow.setViewport(value, { duration: reduced ? 0 : 240 }).then(capture);
   }
   useLayoutEffect(() => {
-    if (!graph) return;
+    if (!graph || loading) return;
     const changedFocus = current.current !== graph.focus, restored = restoring.current !== props.restore;
+    const currentPositions = Object.fromEntries(nodesRef.current.map(n => [n.id, n.position]));
     const grown = graph.nodes.length > nodesRef.current.length;
-    const previous = changedFocus || restored ? props.positions : Object.fromEntries(nodesRef.current.map(n => [n.id, n.position]));
-    const positions = arrange(graph, previous);
+    const changedWorldNodes = overview && (graph.nodes.length !== nodesRef.current.length || graph.nodes.some(n => !currentPositions[n.key]));
+    const previous = changedFocus || restored ? props.positions : currentPositions;
+    const positions = !overview ? arrange(graph, previous)
+      : graph.nodes.every(n => previous[n.key]) ? previous : arrangeOverview(graph);
     const next: GraphNode[] = graph.nodes.map(item => ({ id: item.key, type: 'world', position: positions[item.key],
       ariaLabel: `${item.label}，${item.type === 'event' ? '正式事件' : entityKinds[item.kind] || item.kind}，按 Enter 查看资料`,
-      data: { item, focus: item.key === graph.focus, highlighted: false, expanded: graph.expanded.includes(item.key), portrait: props.portraits[item.id], onExpand: props.onExpand } }));
+      data: { item, focus: item.key === graph.focus, highlighted: false, expanded: graph.expanded.includes(item.key), portrait: props.portraits[item.id], onExpand: overview ? undefined : props.onExpand } }));
     nodesRef.current = next; setNodes(next);
     current.current = graph.focus; restoring.current = props.restore;
-    if (changedFocus || restored || grown) camera.current = { viewport: restored ? props.viewport : undefined, duration: !restored && !reduced ? 240 : 0 };
+    if (changedFocus || restored || grown || changedWorldNodes) camera.current = { viewport: restored ? props.viewport : undefined, duration: !restored && !reduced ? 240 : 0 };
     const frame = requestAnimationFrame(capture);
     return () => cancelAnimationFrame(frame);
-  }, [graph, props.restore]);
+  }, [graph, props.restore, loading]);
   useLayoutEffect(() => {
-    if (!initialized || !camera.current) return;
+    if (loading || !initialized || !camera.current) return;
     const next = camera.current; camera.current = undefined;
     // Compute the camera directly. React Flow's queued fitView can complete
     // after a newly restored view and overwrite its saved viewport.
     const target = next.viewport || fittedViewport(); viewportRef.current = target;
     void flow.setViewport(target, { duration: next.duration }).then(capture);
-  }, [initialized, graph, props.restore]);
+  }, [initialized, graph, props.restore, loading]);
   useEffect(() => {
     setNodes(values => values.map(node => ({ ...node, selected: selectedNodes.has(node.id),
-      data: { ...node.data, onExpand: props.onExpand, highlighted: related.has(node.id), portrait: props.portraits[node.data.item.id] } })));
-  }, [selection, props.picks, hover, props.portraits, props.onExpand, groups]);
+      data: { ...node.data, onExpand: overview ? undefined : props.onExpand, highlighted: related.has(node.id), portrait: props.portraits[node.data.item.id] } })));
+  }, [selection, props.picks, hover, props.portraits, props.onExpand, groups, overview]);
+  const nodesById = new Map(nodes.map(node => [node.id, node]));
   const edges: GraphEdge[] = groups.map(group => {
-    const parallel = groups.filter(g => [g.source, g.target].sort().join('|') === [group.source, group.target].sort().join('|'));
-    const bend = parallel.length > 1 ? (parallel.findIndex(g => g.id === group.id) - (parallel.length - 1) / 2) * 90 * (group.source < group.target ? 1 : -1) : 0;
-    const a = nodes.find(n => n.id === group.source)?.position || { x: 0, y: 0 }, b = nodes.find(n => n.id === group.target)?.position || { x: 0, y: 0 };
+    const from = nodesById.get(group.source), to = nodesById.get(group.target);
+    const a = from?.position || { x: 0, y: 0 }, b = to?.position || { x: 0, y: 0 };
     const horizontal = Math.abs(b.x - a.x) > Math.abs(b.y - a.y);
     const source = horizontal ? b.x > a.x ? Position.Right : Position.Left : b.y > a.y ? Position.Bottom : Position.Top;
     const target = horizontal ? b.x > a.x ? Position.Left : Position.Right : b.y > a.y ? Position.Top : Position.Bottom;
     return { id: group.id, source: group.source, target: group.target, sourceHandle: `source-${source}`, targetHandle: `target-${target}`, type: 'relation',
       selected: selectedEdges.has(group.id), markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#789cae' },
-      ariaLabel: `${graph?.nodes.find(n => n.key === group.source)?.label} → ${graph?.nodes.find(n => n.key === group.target)?.label}，${group.records.map(e => e.label).join('、')}`,
-      data: { group, bend, reveal: graph!.nodes.length <= 12 || highlight !== graph?.focus,
+      ariaLabel: `${from?.data.item.label} → ${to?.data.item.label}，${group.records.map(e => e.label).join('、')}`,
+      data: { group, bend: (bends.get(group.id) ?? 0) * (horizontal ? 1 : 2), reveal: graph!.nodes.length <= 12 || highlight !== graph?.focus,
         onSelect: extend => { if (!loading) props.onSelect({ type: 'edge', key: group.id }, extend); }, highlighted: group.source === highlight || group.target === highlight,
         labels: props.labels && (zoom > .85 || graph!.nodes.length <= 12) } };
   });
@@ -134,7 +160,7 @@ function Canvas(props: Props) {
     if (!layoutChanges.length) return;
     setNodes(values => { const next = applyNodeChanges(layoutChanges, values); nodesRef.current = next; return next; });
   }, []);
-  return <div ref={host} className={`explore-flow ${loading ? 'is-refreshing' : ''}`} aria-busy={loading}>
+  return <div ref={host} className={`explore-flow ${overview ? 'is-overview' : ''} ${loading ? 'is-refreshing' : ''}`} aria-busy={loading}>
     <ReactFlow<GraphNode, GraphEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={changeNodes}
       onNodeClick={(event, node) => { if (!loading) props.onSelect({ type: 'node', key: node.id }, event.ctrlKey || event.metaKey); }}
       onEdgeClick={(event, edge) => { if (!loading) props.onSelect({ type: 'edge', key: edge.id }, event.ctrlKey || event.metaKey); }}
@@ -156,16 +182,16 @@ function Canvas(props: Props) {
       }}
       nodesDraggable={!loading} nodesConnectable={false} edgesReconnectable={false} elementsSelectable={!loading} deleteKeyCode={null}
       multiSelectionKeyCode={null} selectionKeyCode={null} selectNodesOnDrag={false}
-      minZoom={.25} maxZoom={1.8} fitView={false} proOptions={{ hideAttribution: false }}
+      minZoom={minZoom} maxZoom={1.8} fitView={false} proOptions={{ hideAttribution: false }}
       ariaLabelConfig={{ 'controls.zoomIn.ariaLabel': '放大关系图', 'controls.zoomOut.ariaLabel': '缩小关系图', 'controls.fitView.ariaLabel': '适配全部可见对象', 'minimap.ariaLabel': '关系图概览' }}>
       <Background gap={32} size={.7} color="#c3d6df"/>
       <MiniMap pannable zoomable position="top-left" style={{ width: 120, height: 82 }} nodeBorderRadius={16} nodeColor={node => node.id === graph?.focus ? '#79d8e9' : '#cfdee9'} maskColor="rgba(249,252,253,.7)"/>
       <Controls showInteractive={false} showFitView={false} position="bottom-right">
         <ControlButton aria-label="适配全部可见对象" title="适配画布" onClick={() => { void fit(); }}><Maximize2 size={17}/></ControlButton>
-        <ControlButton aria-label="回到焦点" title="回到焦点" onClick={() => { const node = nodes.find(n => n.id === graph?.focus); if (node) void flow.setCenter(node.position.x + 64, node.position.y + 55, { zoom: Math.max(.75, flow.getZoom()), duration: reduced ? 0 : 240 }).then(capture); }}><Crosshair size={17}/></ControlButton>
+        {!overview && <ControlButton aria-label="回到焦点" title="回到焦点" onClick={() => { const node = nodesById.get(graph?.focus || ''); if (node) void flow.setCenter(node.position.x + 64, node.position.y + 55, { zoom: Math.max(.75, flow.getZoom()), duration: reduced ? 0 : 240 }).then(capture); }}><Crosshair size={17}/></ControlButton>}
       </Controls>
     </ReactFlow>
-    {!graph?.nodes.length && <div className="explore-canvas-empty"><Network size={38} strokeWidth={1.3}/><h2>{loading ? (mapView ? '正在读取 Canon 地图…' : '正在读取世界联系…') : (mapView ? '从一个地点开始查看 Canon Map' : '从一个对象开始探索')}</h2><p>{mapView ? '地图只显示地点和已记录的显式连通。' : '选择人物、地点、组织或正式事件，查看已记录的联系。'}</p></div>}
+    {!graph?.nodes.length && <div className="explore-canvas-empty"><Network size={38} strokeWidth={1.3}/><h2>{loading ? (mapView ? '正在读取 Canon 地图…' : '正在读取世界联系…') : mapView ? '从一个地点开始查看 Canon Map' : overview ? '此范围暂无联系' : '从一个对象开始探索'}</h2><p>{mapView ? '地图只显示地点和已记录的显式连通。' : '调整筛选，或选择对象查看局部联系。'}</p></div>}
     {graph && graph.nodes.length > 0 && graph.edges.length === 0 && !loading && <div className="explore-no-links">{mapView ? '此范围暂无地图连通 · 可在创作区的正式记录中标记' : '此范围尚无联系 · 可调整筛选或在对象资料中补充正式记录'}</div>}
   </div>;
 }

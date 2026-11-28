@@ -177,11 +177,18 @@ def inspirations(world_id: str, request: Request, q: str = Query('', max_length=
                  status: Literal['active', 'archived', 'all'] = 'active',
                  node_id: str | None = None, worldline_id: str | None = None,
                  character_id: str | None = None, location_id: str | None = None,
-                 tag: str | None = Query(None, max_length=40), offset: int = Query(0, ge=0),
+                 tag: str | None = Query(None, max_length=40), placement: Literal['unassigned'] | None = None,
+                 offset: int = Query(0, ge=0),
                  limit: int = Query(30, ge=1, le=100)):
     return repository(request).list_inspirations(world_id, query=q, origin=origin, status=status,
         node_id=node_id, worldline_id=worldline_id, character_id=character_id,
-        location_id=location_id, tag=tag, offset=offset, limit=limit)
+        location_id=location_id, tag=tag, placement=placement, offset=offset, limit=limit)
+
+
+@router.get('/worlds/{world_id}/writing-inspirations/{node_id}')
+def writing_inspirations(world_id: str, node_id: str, request: Request,
+                         offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100)):
+    return repository(request).writing_inspirations(world_id, node_id, offset=offset, limit=limit)
 
 
 @router.post('/worlds/{world_id}/inspirations', status_code=201)
@@ -192,6 +199,10 @@ def create_inspiration(world_id: str, body: InspirationCreate, request: Request)
 @router.get('/inspirations/{identity}')
 def inspiration(identity: str, request: Request):
     return repository(request).get_inspiration(identity)
+
+@router.get('/worlds/{world_id}/inspirations/{identity}/history')
+def inspiration_history(world_id: str, identity: str, request: Request, version: int | None = Query(None, ge=1)):
+    return repository(request).inspiration_history(world_id, identity, version)
 
 
 @router.patch('/inspirations/{identity}')

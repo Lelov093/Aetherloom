@@ -1,0 +1,19 @@
+.dialog.workspace-export-dialog { width: min(720px, calc(100vw - 36px)); }
+.dialog.workspace-export-dialog[open] { display: flex; flex-direction: column; max-height: calc(100dvh - 46px); overflow: hidden; }
+.workspace-export-dialog > :not(.workspace-export-preview) { flex-shrink: 0; }
+.workspace-export-controls,.workspace-export-presets,.export-packaging { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.workspace-export-controls { justify-content: space-between; margin-bottom: 12px; }
+.workspace-export-presets .button[aria-pressed="true"] { background: var(--surface-selected); color: var(--text-link); }
+.export-packaging,.export-bulk,.workspace-export-preview select { font-size: 13px; }
+.workspace-export-preview { min-height: 80px; max-height: min(340px, 48vh); overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 8px 10px; }
+.export-preview-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 6px 2px 12px; }
+.export-preview-heading span,.export-branch small { color: var(--text-secondary); font-size: 12px; }
+.export-branch > summary { display: flex; align-items: center; gap: 7px; min-height: 32px; overflow-wrap: anywhere; }
+.export-branch-content { border-inline-start: 1px solid var(--border-subtle); margin-inline-start: 10px; padding-inline-start: 10px; }
+.export-bulk,.export-file { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 4px 2px; }
+.export-file { justify-content: space-between; border-bottom: 1px solid var(--border-subtle); }
+.export-file > label { min-width: 0; display: flex; align-items: center; gap: 7px; overflow-wrap: anywhere; }
+.export-file > label svg { flex-shrink: 0; }
+.export-file > select { max-width: 46%; }
+.export-result { margin-top: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px 12px; display: grid; justify-items: start; gap: 5px; overflow-wrap: anywhere; }
+.export-feedback { margin: 8px 0; }

@@ -4,11 +4,13 @@ import type { Viewport, XYPosition } from '@xyflow/react';
 import { ArrowLeft, Check, Compass, Crosshair, Eye, Layers, ListChecks, Map as MapIcon, Network, PanelLeft, PanelRight, RotateCcw, Save, Search, SlidersHorizontal, ScrollText, X, CalendarRange } from 'lucide-react';
 import { Button, Dialog, ErrorNotice } from '../../components/ui';
 import { EntityMark } from '../../components/EntityMark';
+import { mapPath } from '../maps/api';
+import { momentLabel, readMoment, storyParams, withMoment, type StoryMoment } from '../periods/api';
 import { WorkspaceHeader, useWorkspaceTrail } from '../../components/WorkspaceContext';
 import { entityKinds } from '../creation/api';
 import { ObjectBrowser } from '../objects/ObjectBrowser';
 import { Portrait, usePortraits } from '../objects/Portrait';
-import { exploreApi, families, familyNames, type ExploreGraph, type Family } from './api';
+import { exploreApi, families, familyNames, type ExploreGraph, type Family, type RelationDirection } from './api';
 import { ExploreCanvas } from './ExploreCanvas';
 import { ExploreInspector, type InspectorView } from './ExploreInspector';
 import { ExplorePane, ExploreResize, useExplorePanels } from './ExplorePanels';
@@ -21,7 +23,8 @@ import { YearFilter } from './YearFilter';
 import type { TimeViewport } from './timelineModel';
 import { TimelineScope } from './TimelineScope';
 
-type ExploreReturn = Omit<SavedView, 'id' | 'name' | 'focus' | 'mode' | 'range' | 'uncertain'> & {
+type DisplayPreferences = Omit<SavedView, 'id' | 'name' | 'focus' | 'mode' | 'range' | 'uncertain'>;
+type ExploreReturn = DisplayPreferences & {
   selection?: Selection;
   picks?: CanvasSelection[];
   inspector: InspectorView;
@@ -30,15 +33,25 @@ type ExploreReturn = Omit<SavedView, 'id' | 'name' | 'focus' | 'mode' | 'range' 
   viewId: string;
   focusBack: string[];
 };
+type RelationshipOverview = { world: string; search: string; display: ExploreReturn };
+type ExploreOrigin = { relationshipOverview?: RelationshipOverview; relationshipObject?: string };
+const clearMoment = { at_year: undefined, at_event: undefined, event_side: undefined };
 
 export function ExploreWorkspace({ world }: { world: string }) {
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
   const [returnView] = useState<ExploreReturn | undefined>(location.state?.exploreReturn);
+  const relationshipOverview: RelationshipOverview | undefined = location.state?.relationshipOverview?.world === world
+    ? location.state.relationshipOverview : undefined;
+  const fromObject = location.state?.relationshipObject === world;
+  const origin: ExploreOrigin = { relationshipOverview, relationshipObject: fromObject ? world : undefined };
   const requestedFocus = params.get('focus') || '';
   const recordParam = params.get('record');
   const mode: 'relationship' | 'timeline' | 'map' = params.get('view') === 'timeline' ? 'timeline' : params.get('view') === 'map' ? 'map' : 'relationship';
+  const moment = mode !== 'timeline' ? readMoment(params) : undefined;
+  const overview = mode === 'relationship' && !requestedFocus;
+  const canvasTitle = mode === 'timeline' ? '时间探索' : mode === 'map' ? 'Canon Map' : overview ? '关系总览' : '局部邻域';
   const timelineRelationship = mode === 'timeline' ? params.get('relationship') || '' : '';
   const numberParam = (key: string) => { const text = params.get(key); return text && /^-?\d{1,6}$/.test(text) ? Number(text) : undefined; };
   const range: YearRange = { start: numberParam('year_start'), end: numberParam('year_end') };
@@ -56,6 +69,8 @@ export function ExploreWorkspace({ world }: { world: string }) {
   const [hops, setHops] = useState(returnView?.hops ?? 1);
   const [expanded, setExpanded] = useState<string[]>(returnView?.expanded ?? []);
   const [chosenFamilies, setFamilies] = useState<Family[]>(returnView?.families ?? families);
+  const [direction, setDirection] = useState<RelationDirection>(returnView?.direction ?? 'any');
+  const [relationLabel, setRelationLabel] = useState(returnView?.relationLabel ?? '');
   const [kinds, setKinds] = useState<string[]>(returnView?.kinds ?? []);
   const [limit, setLimit] = useState(returnView?.limit ?? 12);
   const [labels, setLabels] = useState(returnView?.labels ?? true);
@@ -74,6 +89,8 @@ export function ExploreWorkspace({ world }: { world: string }) {
   const [views, setViews] = useState<SavedView[]>([]), [viewId, setViewId] = useState(returnView?.viewId ?? ''), [notice, setNotice] = useState('');
   const [viewsReady, setViewsReady] = useState(false), [writingView, setWritingView] = useState(false);
   const [restore, setRestore] = useState(0);
+  const [restoreSearch, setRestoreSearch] = useState<string>();
+  const waitingForView = restoreSearch !== undefined && restoreSearch !== params.toString();
   const [initialPositions, setInitialPositions] = useState<Record<string, XYPosition>>(returnView?.positions ?? {});
   const [initialViewport, setInitialViewport] = useState<Viewport | undefined>(returnView?.viewport);
   const snapshot = useRef({ positions: initialPositions, viewport: initialViewport });
@@ -83,12 +100,21 @@ export function ExploreWorkspace({ world }: { world: string }) {
   const focus = mode === 'timeline' ? timeline.placed?.focus_object : graph?.nodes.find(n => n.key === graph.focus);
   const pair = timeline.placed?.relationship_scope;
   const pairLabel = timelineRelationship && pair?.id === timelineRelationship ? pair.endpoints.map(endpoint => endpoint.label).join(' ↔ ') : '';
-  const queryKey = JSON.stringify({ focus: requestedFocus, hops, expanded, families: chosenFamilies, kinds, limit, range, uncertain, projection: mode === 'map' ? 'map' : 'relationship', eventId: mode === 'map' ? mapEvent?.id : undefined });
-  const busy = mode === 'timeline' ? timeline.loading : loading || graphKey !== queryKey && !error;
+  const queryKey = JSON.stringify({
+    focus: requestedFocus, hops, expanded, families: chosenFamilies, kinds, limit, range, uncertain,
+    projection: mode === 'map' ? 'map' : 'relationship', eventId: mode === 'map' ? mapEvent?.id : undefined,
+    scope: overview ? 'world' : 'neighborhood',
+    direction: mode === 'relationship' && !overview ? direction : undefined,
+    label: mode === 'relationship' ? relationLabel : undefined, moment,
+  });
+  const busy = waitingForView || (mode === 'timeline' ? timeline.loading : loading || graphKey !== queryKey && !error);
   const problem = mode === 'timeline' ? timeline.error : error;
   const revision = !busy && !problem ? (mode === 'timeline' ? timeline.placed?.revision : graph?.revision) : undefined;
   const graphPicks = mode === 'relationship' ? picks : undefined;
-  useWorkspaceTrail([{ label: pairLabel || focus?.label || (mode === 'timeline' ? '世界时间轴' : mode === 'map' ? 'Canon Map' : '关系探索') }]);
+  useWorkspaceTrail([{ label: pairLabel || (!overview && focus?.label) || (mode === 'timeline' ? '世界时间轴' : canvasTitle) }]);
+  useEffect(() => {
+    if (restoreSearch !== undefined && !waitingForView) setRestoreSearch(undefined);
+  }, [restoreSearch, waitingForView]);
   useEffect(() => {
     let active = true;
     readViews(world).then(value => {
@@ -96,14 +122,18 @@ export function ExploreWorkspace({ world }: { world: string }) {
     }).catch(() => { if (active) setNotice('无法读取本机视图。请重新打开探索后重试。'); });
     return () => { active = false; };
   }, [world]);
-  function updateParams(changes: Record<string, string | undefined>) {
+  function updateParams(changes: Record<string, string | undefined>, state: ExploreOrigin = origin) {
     const next = new URLSearchParams(params);
     for (const [key, value] of Object.entries(changes)) { if (value === undefined || value === '') next.delete(key); else next.set(key, value); }
     if (next.get('view') !== 'timeline') next.delete('relationship');
     if (next.get('focus') !== params.get('focus') || next.get('view') !== params.get('view')) setPicks(undefined);
-    if (next.toString() !== params.toString()) setParams(next);
+    if (next.toString() !== params.toString()) setParams(next, { replace: fromObject, state });
   }
-  function changeRange(value: YearRange) { updateParams({ year_start: value.start === undefined ? undefined : String(value.start), year_end: value.end === undefined ? undefined : String(value.end) }); setPlacedOffset(0); setUnplacedOffset(0); setLocate(''); setViewId(''); }
+  function changeRange(value: YearRange) { updateParams({ ...clearMoment, year_start: value.start === undefined ? undefined : String(value.start), year_end: value.end === undefined ? undefined : String(value.end) }); setPlacedOffset(0); setUnplacedOffset(0); setLocate(''); setViewId(''); }
+  function changeMoment(point?: StoryMoment) {
+    updateParams({ ...clearMoment, ...storyParams(point), record: undefined });
+    setViewId('');
+  }
   function switchMode(value: 'relationship' | 'timeline' | 'map') {
     if (value === mode) return;
     if (value === 'map') {
@@ -112,7 +142,8 @@ export function ExploreWorkspace({ world }: { world: string }) {
       updateParams({ view: 'map', focus: location, record: undefined });
       setSelection(location ? { type: 'node', key: location } : undefined);
     } else {
-      updateParams({ view: value === 'relationship' ? undefined : value, ...(timelineRelationship ? { focus: focus?.key } : {}) });
+      updateParams({ view: value === 'relationship' ? undefined : value, ...(value === 'timeline' ? clearMoment : {}),
+        ...(timelineRelationship ? { focus: focus?.key } : {}) });
     }
     setViewId('');
   }
@@ -124,7 +155,7 @@ export function ExploreWorkspace({ world }: { world: string }) {
     setNotice('原身份已合并，正在展示保留的正式对象。');
   }, [mode, timeline.loading, timeline.placed]);
   useEffect(() => {
-    if (mode === 'timeline') return;
+    if (mode === 'timeline' || waitingForView) return;
     let active = true;
     setLoading(true); setError('');
     exploreApi.graph(world, JSON.parse(queryKey)).then(value => {
@@ -141,14 +172,31 @@ export function ExploreWorkspace({ world }: { world: string }) {
       if (value.requested_focus && value.requested_focus !== value.focus) setNotice('原身份已合并，正在展示保留的正式对象。');
     }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [world, mode, queryKey, retry]);
+  }, [world, mode, queryKey, retry, waitingForView]);
   function changeFocus(key: string, remember = true) {
     if (remember && graph?.focus && graph.focus !== key) setFocusBack(old => [...old, graph.focus].slice(-30));
     if (mode === 'map') setMapEvent(undefined);
-    updateParams({ focus: key, record: undefined, relationship: undefined }); setExpanded([]); setSearch(''); setViewId(''); setNotice(''); setPlacedOffset(0); setUnplacedOffset(0); setLocate('');
+    const state = overview && key && !busy && graph ? { ...origin, relationshipOverview: captureOverview() } : origin;
+    updateParams({ focus: key, record: undefined, relationship: undefined }, state); setExpanded([]); setSearch(''); setViewId(''); setNotice(''); setPlacedOffset(0); setUnplacedOffset(0); setLocate('');
     setSelection(key ? { type: 'node', key } : undefined);
     setInitialPositions({}); setInitialViewport(undefined);
     if (panels.narrow) panels.toggle('left', false);
+  }
+  function showOverview() {
+    if (relationshipOverview) {
+      const { search, display } = relationshipOverview;
+      const target = new URLSearchParams(search);
+      setParams(target, { replace: fromObject });
+      applyDisplay(display, target);
+      setSelection(display.selection); setPicks(display.picks); setInspector(display.inspector);
+      setSearch(display.search); setLocate(display.locate); setViewId(display.viewId); setFocusBack(display.focusBack);
+    } else {
+      updateParams({ focus: undefined, record: undefined }, {});
+      setSelection(undefined); setPicks(undefined); setExpanded([]); setSearch(''); setViewId(''); setFocusBack([]);
+      setInitialPositions({}); setInitialViewport(undefined); setRestore(n => n + 1);
+    }
+    setNotice('');
+    if (panels.narrow) panels.toggle('right', false);
   }
   function select(value?: Selection) {
     if (busy || problem) return;
@@ -175,43 +223,63 @@ export function ExploreWorkspace({ world }: { world: string }) {
     if (expanded.length >= 20) { setNotice('已展开 20 个分支，可收起分支或将对象设为新焦点后继续。'); return; }
     setExpanded(old => [...old, key]); setViewId('');
   }
+  function applyDisplay(view: DisplayPreferences, target: URLSearchParams) {
+    // Route updates can arrive after the display preferences. Apply the camera
+    // only once the graph query belongs to the restored route.
+    setRestoreSearch(target.toString());
+    setMapEvent(view.mapEvent); setHops(view.hops); setExpanded(view.expanded); setFamilies(view.families);
+    setKinds(view.kinds); setLimit(view.limit); setLabels(view.labels);
+    setDirection(view.direction ?? 'any'); setRelationLabel(view.relationLabel ?? '');
+    setShowMapConnections(view.showMapConnections ?? true);
+    setTimeLayers(view.layers || timeLayers); setCursor(view.cursor);
+    setPlacedOffset(view.timeOffsets?.placed || 0); setUnplacedOffset(view.timeOffsets?.unplaced || 0);
+    setInitialTimeViewport(view.timelineViewport); setInitialTimeScroll(view.timelineScroll || 0);
+    setInitialPositions(view.positions); setInitialViewport(view.viewport); setRestore(n => n + 1);
+  }
   function restoreView(id: string) {
     const view = views.find(v => v.id === id);
     if (!view) { setViewId(''); return; }
     setPicks(undefined);
     if (graph?.focus && graph.focus !== view.focus) setFocusBack(old => [...old, graph.focus]);
-    setParams({
+    const target = new URLSearchParams({
       ...(view.focus ? { focus: view.focus } : {}),
       ...(view.mode && view.mode !== 'relationship' ? { view: view.mode } : {}),
       ...(view.mode === 'timeline' && view.timelineRelationship ? { relationship: view.timelineRelationship } : {}),
       ...(view.range?.start !== undefined ? { year_start: String(view.range.start) } : {}),
       ...(view.range?.end !== undefined ? { year_end: String(view.range.end) } : {}),
+      ...storyParams(view.moment),
       uncertain: String(view.uncertain !== false),
     });
-    setMapEvent(view.mapEvent); setHops(view.hops); setExpanded(view.expanded); setFamilies(view.families); setKinds(view.kinds); setLimit(view.limit); setLabels(view.labels);
-    setShowMapConnections(view.showMapConnections ?? true);
-    setTimeLayers(view.layers || timeLayers); setCursor(view.cursor); setPlacedOffset(view.timeOffsets?.placed || 0); setUnplacedOffset(view.timeOffsets?.unplaced || 0); setLocate(''); setSelection(view.focus ? { type: 'node', key: view.focus } : undefined);
-    setInitialTimeViewport(view.timelineViewport); setInitialTimeScroll(view.timelineScroll || 0);
-    setInitialPositions(view.positions); setInitialViewport(view.viewport); setRestore(n => n + 1); setViewId(id); setSearch(''); setNotice('已恢复显示偏好；内容按当前正式记录重新读取。');
+    setParams(target, { replace: fromObject, state: overview && view.focus && (!view.mode || view.mode === 'relationship')
+      ? { ...origin, relationshipOverview: captureOverview() } : origin });
+    applyDisplay(view, target);
+    setLocate(''); setSelection(view.focus ? { type: 'node', key: view.focus } : undefined);
+    setViewId(id); setSearch(''); setNotice('已恢复显示偏好；内容按当前正式记录重新读取。');
   }
-  function displayPreferences() {
+  function displayPreferences(): DisplayPreferences {
     return {
-      hops, expanded, families: chosenFamilies, kinds, limit, labels, layers, cursor,
+      hops, expanded, families: chosenFamilies, kinds, limit, labels, layers, cursor, direction, relationLabel, moment,
       mapEvent: mode === 'map' ? mapEvent : undefined,
       showMapConnections: mode === 'map' ? showMapConnections : undefined,
       timelineRelationship: timelineRelationship || undefined,
       timelineViewport: timeSnapshot.current.viewport, timelineScroll: timeSnapshot.current.scroll,
       timeOffsets: { placed: timeline.placed?.offset ?? placedOffset, unplaced: timeline.unplaced?.offset ?? unplacedOffset },
-      ...snapshot.current,
+      positions: snapshot.current.positions, viewport: snapshot.current.viewport,
     };
+  }
+  function captureDisplay(): ExploreReturn {
+    return { ...displayPreferences(), selection, picks: graphPicks, inspector, search, locate, viewId, focusBack };
+  }
+  function captureOverview(): RelationshipOverview {
+    return { world, search: location.search, display: captureDisplay() };
   }
   async function followDetailLink(event: MouseEvent<HTMLAnchorElement>, destination: string) {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    const exploreReturn: ExploreReturn = { ...displayPreferences(), selection, picks: graphPicks, inspector, search, locate, viewId, focusBack };
+    const exploreReturn = captureDisplay();
     // Keep the display state on the originating Explore history entry.
-    await navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: { exploreReturn } });
-    await navigate(destination, { state: { exploreWorld: world } });
+    await navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: { ...origin, exploreReturn } });
+    await navigate(destination, { state: { exploreWorld: world, relationshipOverview: overview ? captureOverview() : relationshipOverview } });
   }
   async function saveView() {
     if (!viewsReady || writingView || views.length >= 20 || !saveName.trim()) return;
@@ -232,8 +300,8 @@ export function ExploreWorkspace({ world }: { world: string }) {
   }
   function reset() {
     setPicks(undefined);
-    updateParams({ year_start: undefined, year_end: undefined, uncertain: undefined, focus: undefined, record: undefined, relationship: undefined }); setMapEvent(undefined); setPlacedOffset(0); setUnplacedOffset(0); setLocate(''); setTimeLayers(timeLayers); setCursor(undefined); setInitialTimeViewport(undefined); setInitialTimeScroll(0);
-    setFamilies(families); setKinds([]); setHops(1); setExpanded([]); setLimit(12); setLabels(true); setSearch(''); setViewId('');
+    updateParams({ ...clearMoment, year_start: undefined, year_end: undefined, uncertain: undefined, focus: undefined, record: undefined, relationship: undefined }); setMapEvent(undefined); setPlacedOffset(0); setUnplacedOffset(0); setLocate(''); setTimeLayers(timeLayers); setCursor(undefined); setInitialTimeViewport(undefined); setInitialTimeScroll(0);
+    setFamilies(families); setDirection('any'); setRelationLabel(''); setKinds([]); setHops(1); setExpanded([]); setLimit(12); setLabels(true); setSearch(''); setViewId('');
     setShowMapConnections(true);
     setInitialPositions({}); setInitialViewport(undefined); setRestore(n => n + 1); panels.reset(); setNotice('已恢复默认探索视图。');
   }
@@ -245,7 +313,7 @@ export function ExploreWorkspace({ world }: { world: string }) {
     const current = focus?.key || requestedFocus;
     const recordFocus = edge && (edge.source === current || edge.target === current) ? current : edge?.source || current;
     const key = kind === 'entity' ? `entity:${id}` : kind === 'event' ? `event:${id}` : recordFocus;
-    updateParams({ view: 'timeline', focus: key, record: kind === 'entity' ? undefined : `${kind}:${id}`, relationship: kind === 'relationship' ? id : undefined });
+    updateParams({ ...clearMoment, view: 'timeline', focus: key, record: kind === 'entity' ? undefined : `${kind}:${id}`, relationship: kind === 'relationship' ? id : undefined });
     setTimeLayers(timeLayers); setPlacedOffset(0); setUnplacedOffset(0); setLocate(kind === 'entity' ? '' : `${kind}:${id}`);
     setSelection(kind === 'entity' ? { type: 'node', key } : { type: 'record', key: `${kind}:${id}` }); setViewId('');
   }
@@ -254,7 +322,7 @@ export function ExploreWorkspace({ world }: { world: string }) {
     const endpoint = record?.objects.find(object => pair?.endpoints.some(member => member.key === object.key && member.active));
     const key = record?.objects.some(object => object.key === current) ? current
       : endpoint?.key || record?.objects[0]?.key || (record?.kind === 'event' ? `event:${record.id}` : current);
-    updateParams({ view: undefined, focus: key, record: record?.key, ...(cursor !== undefined && !record ? { year_start: String(cursor), year_end: String(cursor) } : {}) });
+    updateParams({ ...clearMoment, view: undefined, focus: key, record: record?.key, ...(cursor !== undefined && !record ? storyParams({ year: cursor }) : {}) });
     setSelection(record ? { type: 'record', key: record.key } : key ? { type: 'node', key } : undefined); setViewId('');
   }
   function showMap(location: string, record: string) {
@@ -265,22 +333,32 @@ export function ExploreWorkspace({ world }: { world: string }) {
   const objects = graph?.nodes.filter(n => `${n.label} ${n.subtitle} ${entityKinds[n.kind] || n.kind}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())) || [];
   const mapLineSummary = showMapConnections ? `${graph?.edges.length ?? 0} 条显式连通` : '连通线已隐藏';
   return <main id="main-content" className={`explore-workspace ${panels.narrow ? 'is-narrow' : ''}`} style={{ '--explore-left': `${panels.leftWidth}px`, '--explore-right': `${panels.rightWidth}px` } as CSSProperties}>
-    <WorkspaceHeader><span className="explore-scope-chip">{mode === 'map' ? <MapIcon size={14}/> : mode === 'timeline' ? <CalendarRange size={14}/> : <Network size={14}/>}世界范围 · 正式记录</span></WorkspaceHeader>
-    {panels.leftOpen && <div className="explore-side-frame explore-left-frame"><ExplorePane side="left" floating={panels.narrow} heading={mode === 'timeline' ? '时间探索' : mode === 'map' ? '地图探索' : '关系探索'} onClose={() => panels.toggle('left', false)}>
+    <WorkspaceHeader><span className="explore-scope-chip">{mode === 'map' ? <MapIcon size={14}/> : mode === 'timeline' ? <CalendarRange size={14}/> : <Network size={14}/>}正式记录</span></WorkspaceHeader>
+    {panels.leftOpen && <div className="explore-side-frame explore-left-frame"><ExplorePane side="left" floating={panels.narrow} heading={mode === 'map' ? '地图探索' : canvasTitle} onClose={() => panels.toggle('left', false)}>
       <div className="explore-left-scroll">
-        <section className="explore-focus-section"><h3><Crosshair size={14}/>焦点</h3><button type="button" className="explore-focus-card" onClick={() => setPicking(true)}>
+        <section className="explore-focus-section"><h3><Crosshair size={14}/>{overview ? '局部邻域' : '焦点'}</h3><button type="button" className="explore-focus-card" onClick={() => setPicking(true)}>
           {pairLabel ? <><Network size={25}/><span><strong title={pairLabel}>{pairLabel}</strong><small>关系两端</small></span></> : focus ? <>{focus.kind === 'character' && portraits[focus.id] ? <Portrait id={focus.id} name={focus.label} version={portraits[focus.id]}/> : focus.type === 'event' ? <span className="entity-mark"><ScrollText size={23}/></span> : <EntityMark kind={focus.kind}/>}<span><strong title={focus.label}>{focus.label}</strong><small>{focus.type === 'event' ? '正式事件' : entityKinds[focus.kind] || focus.kind}</small></span></> : <><Compass size={25}/><span>{mode === 'timeline' ? '世界范围' : mode === 'map' ? '选择地点' : '选择焦点'}<small>从真实对象或事件开始</small></span></>}<Search size={15}/>
-        </button>{!!focusBack.length && <Button variant="ghost" className="explore-back" onClick={() => { const previous = focusBack.at(-1)!; setFocusBack(old => old.slice(0, -1)); changeFocus(previous, false); }}><ArrowLeft size={13}/>上一焦点</Button>}</section>
+        </button>{!overview && !!focusBack.length && <Button variant="ghost" className="explore-back" onClick={() => { const previous = focusBack.at(-1)!; setFocusBack(old => old.slice(0, -1)); changeFocus(previous, false); }}><ArrowLeft size={13}/>上一焦点</Button>}</section>
         <YearFilter range={range} uncertain={uncertain} onChange={changeRange} onUncertain={value => { updateParams({ uncertain: String(value) }); setPlacedOffset(0); setUnplacedOffset(0); setLocate(''); setViewId(''); }}/>
         {mode === 'timeline' ? <TimelineScope placed={timeline.placed} unplaced={timeline.unplaced} layers={layers} onLayers={value => { setTimeLayers(value); setPlacedOffset(0); setUnplacedOffset(0); setLocate(''); setViewId(''); }} onFocus={changeFocus} busy={busy || !!problem}/> : mode === 'map' ? <>
         <section className="explore-left-section"><h3><MapIcon size={14}/>Canon Map</h3><p>显示地点及正式记录中已标记的连通。</p>{mapEvent ? <div className="explore-filter-row"><ScrollText size={14}/><span>事件筛选 · {mapEvent.label}</span><Button variant="ghost" onClick={() => { setMapEvent(undefined); setViewId(''); }}>清除</Button></div> : <Button variant="ghost" onClick={() => setEventPicking(true)}><ScrollText size={14}/>按事件筛选地点</Button>}</section>
         <section className="explore-left-section explore-objects"><h3>可见地点 <small>{graph?.nodes.length || 0}</small><button type="button" className="explore-icon" aria-label="从世界资料选择地点" onClick={() => setPicking(true)}><Search size={14}/></button></h3><label className="explore-search"><Search size={14}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="筛选可见地点…" aria-label="筛选可见地点"/></label>{objects.map(node => <button type="button" className={`explore-object-row ${selection?.type === 'node' && selection.key === node.key ? 'is-selected' : ''}`} key={node.key} onClick={() => select({ type: 'node', key: node.key })} disabled={loading || !!error}><EntityMark kind={node.kind} small/><span><strong title={node.label}>{node.label}</strong><small>地点{node.key === graph?.focus ? ' · 焦点' : ''}</small></span></button>)}{!objects.length && <p className="explore-muted">暂无可见地点。</p>}</section>
         </> : <>
-        <section className="explore-left-section"><h3><Layers size={14}/>探索范围</h3><div className="explore-hop-switch" aria-label="联系层数">{[1, 2].map(value => <button type="button" key={value} aria-pressed={hops === value} onClick={() => { setHops(value); setExpanded([]); setViewId(''); }}>{value === 1 ? '直接联系' : '两层联系'}</button>)}</div><p>以焦点为起点，逐层展开已有联系。</p>
+        {!overview && <section className="explore-left-section"><h3><Layers size={14}/>探索范围</h3><div className="explore-hop-switch" aria-label="联系层数">{[1, 2].map(value => <button type="button" key={value} aria-pressed={hops === value} onClick={() => { setHops(value); setExpanded([]); setViewId(''); }}>{value === 1 ? '直接联系' : '两层联系'}</button>)}</div>
+          <label className="field explore-direction"><span>相对焦点的方向</span><select value={direction} onChange={e => { setDirection(e.target.value as RelationDirection); setViewId(''); }}>
+            <option value="any">全部方向</option><option value="outgoing">从焦点发出</option><option value="incoming">指向焦点</option>
+          </select></label>
           {!!expanded.length && <details className="explore-branches"><summary>手动展开的分支 · {expanded.length}</summary>{expanded.map(key => <button type="button" key={key} onClick={() => setExpanded(old => old.filter(k => k !== key))}><span>{graph?.nodes.find(n => n.key === key)?.label || '已隐藏的分支'}</span><X size={12}/></button>)}<Button variant="ghost" onClick={() => setExpanded([])}>收起手动分支</Button></details>}
-        </section>
+        </section>}
         <section className="explore-left-section"><h3><Link2Icon/>联系类别 <small>已显示记录</small></h3>{families.map(family => <label key={family} className="explore-filter-row"><input type="checkbox" checked={chosenFamilies.includes(family)} onChange={e => { setFamilies(old => e.target.checked ? [...old, family] : old.filter(f => f !== family)); setViewId(''); }}/><span>{familyNames[family]}</span><small>{graph?.edges.filter(e => e.family === family).length || 0}</small></label>)}
-          <details className="explore-kind-filters"><summary><SlidersHorizontal size={13}/>对象类型{!kinds.length ? ' · 全部' : kinds[0] === '__none__' ? ' · 无' : ` · ${kinds.length}`}</summary><p>焦点始终保留，其他对象按类型筛选。</p><Button variant="ghost" onClick={() => setKinds([])}>显示全部类型</Button>{Object.entries({ ...entityKinds, event: '正式事件' }).map(([kind, label]) => <label className="explore-filter-row" key={kind}><input type="checkbox" checked={!kinds.length || kinds.includes(kind)} onChange={e => { const all = Object.keys({ ...entityKinds, event: '' }); setKinds(old => { const current = old.length ? old : all; const next = e.target.checked ? [...new Set([...current.filter(k => k !== '__none__'), kind])] : current.filter(k => k !== kind); return next.length ? next : ['__none__']; }); setViewId(''); }}/><span>{label}</span></label>)}</details>
+          <form key={relationLabel} className="explore-relation-filter" onSubmit={event => {
+            event.preventDefault();
+            setRelationLabel(String(new FormData(event.currentTarget).get('label') ?? '').trim()); setViewId('');
+          }}>
+            <label className="field"><span>正式关系名称</span><input name="label" defaultValue={relationLabel} maxLength={160} placeholder="例如 盟友（精确匹配）"/></label>
+            <div className="year-actions"><Button type="submit">筛选关系名称</Button>{relationLabel && <Button type="button" variant="ghost" onClick={() => { setRelationLabel(''); setViewId(''); }}>清除名称</Button>}</div>
+          </form>
+          <details className="explore-kind-filters"><summary><SlidersHorizontal size={13}/>对象类型{!kinds.length ? ' · 全部' : kinds[0] === '__none__' ? ' · 无' : ` · ${kinds.length}`}</summary>{!overview && <p>焦点始终保留，其他对象按类型筛选。</p>}<Button variant="ghost" onClick={() => setKinds([])}>显示全部类型</Button>{Object.entries({ ...entityKinds, event: '正式事件' }).map(([kind, label]) => <label className="explore-filter-row" key={kind}><input type="checkbox" checked={!kinds.length || kinds.includes(kind)} onChange={e => { const all = Object.keys({ ...entityKinds, event: '' }); setKinds(old => { const current = old.length ? old : all; const next = e.target.checked ? [...new Set([...current.filter(k => k !== '__none__'), kind])] : current.filter(k => k !== kind); return next.length ? next : ['__none__']; }); setViewId(''); }}/><span>{label}</span></label>)}</details>
         </section>
         <section className="explore-left-section explore-objects"><h3>可见对象 <small>{graph?.nodes.length || 0}</small><button type="button" className="explore-icon" aria-label="从世界资料选择焦点" onClick={() => setPicking(true)}><Search size={14}/></button></h3><label className="explore-search"><Search size={14}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="筛选可见对象…" aria-label="筛选可见对象"/></label>
           {objects.map(node => {
@@ -291,13 +369,13 @@ export function ExploreWorkspace({ world }: { world: string }) {
               {node.type === 'event' ? <ScrollText size={17}/> : <EntityMark kind={node.kind} small/>}
               <span><strong title={node.label}>{node.label}</strong><small>{node.type === 'event' ? '正式事件' : entityKinds[node.kind] || node.kind}{node.key === graph?.focus ? ' · 焦点' : ''}</small></span>
             </button>;
-          })}{!objects.length && <p className="explore-muted">{search ? '没有匹配的可见对象。' : '选择焦点后在此查看对象。'}</p>}
+          })}{!objects.length && <p className="explore-muted">{search ? '没有匹配的可见对象。' : '当前范围没有可见对象。'}</p>}
         </section>
         </>}
       </div>
     </ExplorePane>{!panels.narrow && <ExploreResize side="left" panels={panels}/>}</div>}
     <section className="explore-center" aria-label={mode === 'timeline' ? '世界时间画布' : mode === 'map' ? 'Canon 地图画布' : '世界关系画布'}>
-      <header className="explore-canvas-heading"><div>{mode === 'timeline' ? <CalendarRange size={19} strokeWidth={1.5}/> : mode === 'map' ? <MapIcon size={19} strokeWidth={1.5}/> : <Compass size={19} strokeWidth={1.5}/>}<span><h1>{mode === 'timeline' ? '时间探索' : mode === 'map' ? 'Canon Map' : '关系探索'}</h1><small>
+      <header className="explore-canvas-heading"><div>{mode === 'timeline' ? <CalendarRange size={19} strokeWidth={1.5}/> : mode === 'map' ? <MapIcon size={19} strokeWidth={1.5}/> : <Compass size={19} strokeWidth={1.5}/>}<span><h1>{canvasTitle}</h1><small>
         {revision !== undefined && <span title="当前 Working Canon">Canon R{revision} · </span>}
         {mode === 'timeline' ? timeline.placed ? `${timeline.placed.total} 条可定位记录 · ${timeline.unplaced?.total || 0} 条时间未定` : '沿着时间，读懂世界中的变化' : mode === 'map' ? graph ? `${graph.nodes.length} 个可见地点 · ${mapLineSummary}` : '地点与显式连通的只读投影' : graph ? `${graph.nodes.length} 个可见对象 · ${graph.edges.length} 条正式记录` : '人物、地点与事件，在这里连成世界'}
       </small></span></div><div className="explore-toolbar">
@@ -311,28 +389,35 @@ export function ExploreWorkspace({ world }: { world: string }) {
         <button className="explore-icon" type="button" aria-label="重新读取正式记录" title="刷新正式记录" onClick={() => setRetry(n => n + 1)}><RotateCcw size={16}/></button>
         <Button variant="primary" className="explore-save" aria-label="保存视图" title="保存视图" disabled={busy || !!problem || !viewsReady || writingView || views.length >= 20} onClick={() => { setSaveName(`${focus?.label || '世界'}的${mode === 'timeline' ? '时间轴' : mode === 'map' ? '地图' : '联系'}`); setSaving(true); }}><Save size={15}/><span>保存视图</span></Button>
       </div></header>
-      <div className="explore-view-bar"><label><span>本机视图</span><select aria-label="恢复本机探索视图" disabled={!viewsReady || writingView} value={viewId} onChange={e => restoreView(e.target.value)}><option value="">当前探索</option>{views.map(view => <option key={view.id} value={view.id}>{view.name}</option>)}</select></label><Button variant="ghost" onClick={reset}>恢复默认</Button>{viewId && <Button variant="ghost" disabled={writingView} onClick={deleteView}>删除视图</Button>}</div>
-      <div className="explore-mode-bar"><div className="explore-mode-switch" role="group" aria-label="探索视图"><button type="button" aria-pressed={mode === 'relationship'} onClick={() => switchMode('relationship')}><Network size={14}/>关系</button><button type="button" aria-pressed={mode === 'timeline'} onClick={() => switchMode('timeline')}><CalendarRange size={14}/>时间</button><button type="button" aria-pressed={mode === 'map'} onClick={() => switchMode('map')}><MapIcon size={14}/>地图</button></div><span>{range.start === undefined && range.end === undefined ? '全部年份' : `${range.start ?? '不限'}—${range.end ?? '不限'} 年`}</span>
+      <div className="explore-view-bar"><label><span>本机视图</span><select aria-label="恢复本机探索视图" disabled={!viewsReady || writingView} value={viewId} onChange={e => restoreView(e.target.value)}><option value="">当前探索</option>{views.map(view => <option key={view.id} value={view.id}>{view.name}</option>)}</select></label><Button variant="ghost" onClick={reset}>恢复默认</Button>{viewId && <Button variant="ghost" disabled={writingView} onClick={deleteView}>删除视图</Button>}
+        {mode === 'relationship' && !overview && <>
+          <Button variant="ghost" onClick={showOverview}><ArrowLeft size={14}/>返回关系总览</Button>
+          {fromObject && <Button variant="ghost" onClick={() => navigate(-1)}>返回对象</Button>}
+        </>}
+      </div>
+      <div className="explore-mode-bar"><div className="explore-mode-switch" role="group" aria-label="探索视图"><button type="button" aria-pressed={mode === 'relationship'} onClick={() => switchMode('relationship')}><Network size={14}/>关系</button><button type="button" aria-pressed={mode === 'timeline'} onClick={() => switchMode('timeline')}><CalendarRange size={14}/>时间</button><button type="button" aria-pressed={mode === 'map'} onClick={() => switchMode('map')}><MapIcon size={14}/>地点连通</button></div><Link className="text-link" to={withMoment(mapPath(world),moment)}>作者地图</Link><span>{moment ? momentLabel(moment) : range.start === undefined && range.end === undefined ? '全部年份' : `${range.start ?? '不限'}—${range.end ?? '不限'} 年`}</span>
+        {moment && 'event' in moment && <Button variant="ghost" onClick={() => changeMoment({ ...moment, side: moment.side === 'before' ? 'after' : 'before' })}>{moment.side === 'before' ? '切到事件后' : '切到事件前'}</Button>}
+        {moment && <Button variant="ghost" onClick={() => changeMoment()}>跨时期总览</Button>}
         {pairLabel ? <span className="timeline-pair-label" title={pairLabel}>关系两端 · {pairLabel}</span>
           : <small>{mode === 'map' ? 'Canon Map · 地点与显式连通' : '年份相关记录 · 非完整世界快照'}</small>}
       </div>
-      <div className="explore-surface" hidden={mode === 'timeline'}><ExploreCanvas view={mode === 'map' ? 'map' : 'relationship'} graph={graph} loading={busy || !!problem} labels={labels} connectionsVisible={connectionsVisible} selection={selection} picks={graphPicks} portraits={portraits} positions={initialPositions} viewport={initialViewport} restore={restore}
+      <div className="explore-surface" hidden={mode === 'timeline'}><ExploreCanvas view={mode === 'map' ? 'map' : overview ? 'overview' : 'relationship'} graph={graph} loading={mode === 'timeline' || busy || !!problem} labels={labels} connectionsVisible={connectionsVisible} selection={selection} picks={graphPicks} portraits={portraits} positions={initialPositions} viewport={initialViewport} restore={restore}
         onSelect={selectCanvas} onFocus={changeFocus} onExpand={expand} onSnapshot={(positions, viewport) => { snapshot.current = { positions, viewport }; }}/>
       </div><div className="explore-surface" hidden={mode !== 'timeline'}><TimelineCanvas placed={timeline.placed} unplaced={timeline.unplaced} loading={busy || !!problem} range={range} selected={selection?.type === 'record' ? selection.key : undefined} cursor={cursor} onCursor={year => { setCursor(year); select(undefined); }} onSelect={record => { setCursor(undefined); select({ type: 'record', key: record.key }); }} onGraph={showGraph} onMap={showMap} onPage={(section, offset) => { setLocate(''); if (section === 'placed') setPlacedOffset(offset); else setUnplacedOffset(offset); }} context={JSON.stringify({ focus: requestedFocus, relationship: timelineRelationship, range, layers, uncertain })} restore={restore} initialViewport={initialTimeViewport} initialScroll={initialTimeScroll} onSnapshot={(viewport, scroll) => { timeSnapshot.current = { viewport, scroll }; }}/></div>
-      <div className="explore-canvas-status" role="status">{busy ? <><span className="explore-status-dot"/>正在读取正式记录，画布保持原位…</> : problem ? <><span>{problem}</span><Button onClick={() => setRetry(n => n + 1)}>重试</Button><Button onClick={() => setPicking(true)}>另选焦点</Button></> : mode === 'timeline' ? <span>年份边界与修改历史分开 · 未定时间不推测</span> : mode === 'map' ? <span>Canon Map 只读 · 地图路径不自动赋予通行权</span> : graphPicks ? <span>已选 {graphPicks.length} 项 · 点击对象或联系选入或移除</span> : graph?.remaining_links ? <><span>此范围还有 {graph.remaining_links} 条记录未显示。</span>{limit < 120 && <Button onClick={() => { setLimit(old => Math.min(120, old + 12)); setViewId(''); }}>扩大可见范围</Button>}<Button onClick={() => setPicking(true)}>更换焦点</Button></> : <span>{graph?.nodes.length ? '单击查看 · 双击聚焦 · 节点旁展开联系' : <Link to={`/worlds/${world}/create/objects`}>打开世界对象，开始整理资料 →</Link>}</span>}{notice && <span className="explore-view-notice"><Check size={12}/>{notice}</span>}</div>
+      <div className="explore-canvas-status" role="status">{busy ? <><span className="explore-status-dot"/>正在读取正式记录，画布保持原位…</> : problem ? <><span>{problem}</span><Button onClick={() => setRetry(n => n + 1)}>重试</Button><Button onClick={() => setPicking(true)}>另选焦点</Button></> : mode === 'timeline' ? <span>年份边界与修改历史分开 · 未定时间不推测</span> : mode === 'map' ? <span>Canon Map 只读 · 地图路径不自动赋予通行权</span> : graphPicks ? <span>已选 {graphPicks.length} 项 · 点击对象或联系选入或移除</span> : graph?.remaining_links ? <><span>此范围还有 {graph.remaining_links} 条记录未显示。</span>{limit < 120 && <Button onClick={() => { setLimit(old => Math.min(120, old + 12)); setViewId(''); }}>扩大可见范围</Button>}<Button onClick={() => setPicking(true)}>更换焦点</Button></> : <span>{graph?.nodes.length ? (overview ? '点击对象查看资料或进入局部邻域' : '单击查看 · 节点旁展开联系') : <Link to={`/worlds/${world}/create/objects`}>打开世界对象，开始整理资料 →</Link>}</span>}{notice && <span className="explore-view-notice"><Check size={12}/>{notice}</span>}</div>
     </section>
     {panels.rightOpen && <div className="explore-side-frame explore-right-frame"><ExplorePane side="right" floating={panels.narrow} onClose={() => panels.toggle('right', false)}><div className="explore-right-scroll" inert={busy || !!problem} aria-busy={busy}>
       {graph && !!graphPicks?.length && <PickedItems graph={graph} picks={graphPicks} selection={selection}
         onInspect={select} onRemove={pick => setPicks(old => old?.filter(item => !samePick(item, pick)))}
         onClear={() => setPicks([])}/>}
       <ExploreInspector world={world} graph={mode !== 'timeline' ? graph : undefined} timeline={mode === 'timeline'}
-        focusNode={timeline.placed?.focus_object} selection={selection} portraits={portraits} connectionsVisible={connectionsVisible}
+        focusNode={timeline.placed?.focus_object} selection={selection} portraits={portraits} connectionsVisible={connectionsVisible} overview={overview}
         onSelect={select} onFocus={changeFocus} onReference={key => {
           if (mode === 'map' || key.startsWith('event:')) select({ type: 'record', key });
           else changeFocus(key);
         }}
         onTime={mode !== 'timeline' ? showTime : undefined} onMap={mode === 'relationship' ? showMap : undefined}
-        view={inspector} onViewChange={setInspector} onFollowLink={followDetailLink}/>
+        view={inspector} onViewChange={setInspector} onFollowLink={followDetailLink} moment={moment}/>
     </div></ExplorePane>{!panels.narrow && <ExploreResize side="right" panels={panels}/>}</div>}
     {picking && <ObjectBrowser world={world} types={mode === 'map' ? ['entity'] : ['entity', 'event']} entityKind={mode === 'map' ? 'location' : undefined} title={mode === 'map' ? '选择地图地点' : '选择探索焦点'} onClose={() => setPicking(false)} onPick={object => { changeFocus(`${object.type}:${object.id}`); setPicking(false); }}/>} 
     {eventPicking && <ObjectBrowser world={world} types={['event']} title="选择地图事件" onClose={() => setEventPicking(false)} onPick={object => chooseMapEvent({ id: object.id, label: object.label })}/>} 

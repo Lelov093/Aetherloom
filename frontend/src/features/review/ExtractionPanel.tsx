@@ -128,7 +128,7 @@ export function ExtractionPanel({
         </Button>}
       </div>
       {error && <ErrorNotice>{error}</ErrorNotice>}
-      <Link className="text-link" to={`/worlds/${world}/review`}>
+      <Link className="text-link" to={`/worlds/${world}/review/history`}>
         前往审阅 ·{" "}
         {inbox?.candidates.filter(
           (c) => c.status === "pending" || c.status === "later",

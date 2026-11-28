@@ -84,6 +84,9 @@
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
+.object-browser-row .object-browser-excerpt { color: var(--text-primary); }
+.reference-picker-dialog .object-browser-list,
+.reference-picker-dialog .object-browser-detail { max-height: 46vh; }
 .object-browser-row:disabled {
   opacity: 0.5;
   cursor: default;

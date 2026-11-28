@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import { ArrowRight, Clock3, ExternalLink, MapPin, UserRound } from 'lucide-react';
 import { Button, ErrorNotice } from '../../components/ui';
 import { displayName, runtimeRequest, type Envelope, type HostSession, type ReplayEvent, type ReplayTimeline } from './api';
+import { eventText, eventTitle } from './eventText';
+import { ObservationLabels } from './RuntimeRunSettings';
 
-export function RuntimeReplay({ world, line, frame, session, history, onHistory, onActor, onPlace, onSource }: {
+export function RuntimeReplay({ world, line, frame, session, history, onHistory, onActor, onPlace, onInspect, onSource }: {
   world:string;
   line:string;
   frame:Envelope;
@@ -12,6 +14,7 @@ export function RuntimeReplay({ world, line, frame, session, history, onHistory,
   onHistory:(seq:number|null)=>void;
   onActor:(id:string)=>void;
   onPlace:(id:string)=>void;
+  onInspect:(event:ReplayEvent)=>void;
   onSource:()=>void;
 }) {
   const [timeline,setTimeline]=useState<ReplayTimeline>();
@@ -48,7 +51,6 @@ export function RuntimeReplay({ world, line, frame, session, history, onHistory,
   function locationName(id:string|undefined){return id?displayName(p,id):'地点未记录';}
   function select(event:ReplayEvent){
     setSelected(event.seq);
-    if(event.actor_id)onActor(event.actor_id);
     if(event.location_id)onPlace(event.location_id);
     if(event.seq!=null)onHistory(event.seq);
   }
@@ -66,15 +68,19 @@ export function RuntimeReplay({ world, line, frame, session, history, onHistory,
       <div className="runtime-replay-list">
         {timeline.events.map(event=><article className={`runtime-replay-event ${selected===event.seq?'is-selected':''} ${!event.accepted?'is-blocked':''}`} key={event.event_id}>
           <button className="runtime-replay-event-main" onClick={()=>select(event)}>
-            <strong>第{event.seq}步</strong><span><Clock3 size={13}/>逻辑时刻 {event.sim_time_after ?? '未知'}</span><span>{event.accepted?'':'规则阻止 · '}{event.action_type}</span>
-            <p>{event.text || event.action_type}</p>
-            <small><UserRound size={12}/>{actorName(event.actor_id)}<MapPin size={12}/>{locationName(event.location_id)}</small>
+            <strong>第{event.seq}步</strong><span><Clock3 size={13}/>逻辑时刻 {event.sim_time_after ?? '未知'}</span><span>{eventTitle(event)}</span>
+            <p>{event.ruling || event.action_type === 'advance_idle' ? eventText(frame, event) : event.concealed ? '原话已隐藏' : event.text || eventTitle(event)}</p>
+            <ObservationLabels hits={event.observations} />
+            <small><UserRound size={12}/>{actorName(event.actor_id)}{event.recipient_ids?.length
+              ? ` → ${event.recipient_ids.map(actorName).join('、')}` : ''}<MapPin size={12}/>{locationName(event.location_id)}</small>
           </button>
           <div className="runtime-replay-event-actions">
             <Button variant="ghost" disabled={event.seq==null} onClick={()=>select(event)}>查看当步状态 <ArrowRight size={13}/></Button>
             {event.actor_id&&<Button variant="ghost" onClick={()=>onActor(event.actor_id!)}>查看角色</Button>}
             {event.location_id&&<Button variant="ghost" onClick={()=>onPlace(event.location_id!)}>查看地点</Button>}
-            <Button variant="ghost" onClick={onSource}><ExternalLink size={13}/>查看来源</Button>
+            {(event.action_type === 'speak' || event.expression || event.message_kind === 'premise' || event.ruling || event.decision_source) &&
+              <Button variant="ghost" onClick={() => { select(event); onInspect(event); }}>回查这条记录</Button>}
+            {!p.spoiler_free && <Button variant="ghost" onClick={onSource}><ExternalLink size={13}/>查看来源</Button>}
           </div>
         </article>)}
         {!timeline.events.length&&<p className="runtime-muted">这条世界线还没有可重放的提交记录。</p>}

@@ -1,5 +1,5 @@
 import {request,type Entity} from '../creation/api';
-import type {Proposal,Candidate,Preview} from '../review/api';
+import type {Candidate,Preview} from '../review/api';
 import {runtimeReviewList,runtimeReviewRequest} from '../runtime/reviewAccess';
 export interface RecordInput {id:string;version:number;subject_id?:string;object_id?:string;title?:string;predicate?:string;value?:string;label?:string;description?:string;valid_from:string|null;valid_until:string|null;status:string}
 export interface Inputs {revision:number;entities:Entity[];assertions:RecordInput[];events:RecordInput[];relationship_states:RecordInput[]}
@@ -33,10 +33,7 @@ export const simApi={
  create:(world:string,body:Setup)=>request<Session>(`/worlds/${world}/simulations`,post(body)),
  get:(id:string)=>request<Session>(`/simulations/${id}`),
  control:(id:string,action:string)=>request<Session>(`/simulations/${id}/${action}`,post({})),
- propose:(id:string,seq:number,kind:string)=>request<{id:string}>(`/simulations/${id}/proposals`,post({seq,kind})),
  review:async(world:string)=>{const [legacy,current]=await Promise.all([request<SimPreview[]>(`/worlds/${world}/simulation-review`),runtimeReviewList<SimPreview>(world)]);return [...legacy,...current];},
  preview:(id:string,world?:string)=>id.startsWith('rv2_')&&world?runtimeReviewRequest<SimPreview>(world,`/review/${id}`):request<SimPreview>(`/simulation-review/${id}`),
- edit:(c:Candidate,payload:Proposal,world?:string)=>c.id.startsWith('rv2_')&&world?runtimeReviewRequest<SimPreview>(world,`/review/${c.id}`,'PATCH',{version:c.version,payload}):request<SimPreview>(`/simulation-review/${c.id}`,{method:'PATCH',body:JSON.stringify({version:c.version,payload})}),
- decide:(p:SimPreview,action:string,resolution:string|null,ack:boolean,world?:string)=>{const body={version:p.candidate.version,expected_revision:p.revision,action,resolution,acknowledge_inference:ack,acknowledge_baseline:ack};return p.source.type==='runtime_v2'&&world?runtimeReviewRequest(world,`/review/${p.candidate.id}/decide`,'POST',body):request(`/simulation-review/${p.candidate.id}/decide`,post(body));},
 };
 export const simStatus:Record<string,string>={paused:'已暂停',queued:'等待 Worker',running:'运行中',completed:'本段完成'};

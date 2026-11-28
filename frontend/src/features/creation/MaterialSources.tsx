@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Button, Dialog, ErrorNotice } from '../../components/ui';
 import { ObjectBrowser } from '../objects/ObjectBrowser';
 import { creationApi, request, type ContentNode } from './api';
+import { ObjectBrowseLink } from './ObjectNavigation';
 
 export type MaterialTarget = 'entity' | 'assertion' | 'event' | 'relationship';
 export interface MaterialSource {
@@ -79,7 +80,10 @@ export function MaterialSources({world, kind, identity, editable = true}: {
     {error && <><ErrorNotice>{error}</ErrorNotice><Button onClick={() => setRetry(v => v + 1)}>重新读取</Button></>}
     {!sources && !error && <p role="status">正在读取关联…</p>}
     {sources?.length === 0 && <p className="context-hint">尚无资料关联。纯手工设定可以保留来源说明，无需补造原文。</p>}
-    {sources?.map(s => <div key={s.id} className="material-source-row"><Link className="text-link" to={s.to}>{s.work_title} / {s.title} →</Link>
+    {sources?.map(s => <div key={s.id} className="material-source-row"><ObjectBrowseLink className="text-link"
+      to={s.to} focusId={`material-source-${s.id}`} backLabel={kind==='entity'||kind==='assertion'?'返回对象':'返回记录'}>
+      {s.work_title} / {s.title} →
+    </ObjectBrowseLink>
       <small>来源 v{s.source_version} · {s.scope === 'fragment' ? '片段' : '整份资料'}{s.stale && ' · 当前资料已修订'}{s.source_archived && ' · 来源已收起，历史可读'}</small>
       {s.note && <p>{s.note}</p>}{editable && <Button variant="ghost" onClick={() => setRemoving(s)}>解除关联</Button>}</div>)}
     {adding && <SourceAttach world={world} kind={kind} identity={identity} onClose={() => setAdding(false)} onSaved={() => setRetry(v => v + 1)} />}
@@ -92,11 +96,13 @@ export function MaterialSources({world, kind, identity, editable = true}: {
   </section>;
 }
 
-export function DocumentMaterials({world, node, range, prepare, editable=true}: {world:string;node:ContentNode;range?:{start:number;end:number};prepare:()=>Promise<boolean>;editable?:boolean}) {
+export function DocumentMaterials({world, node, range, prepare, editable=true, createdSourceId}: {
+  world:string;node:ContentNode;range?:{start:number;end:number};prepare:()=>Promise<boolean>;editable?:boolean;createdSourceId?:string;
+}) {
   const [sources, setSources] = useState<MaterialSource[]>(), [error, setError] = useState(''), [retry, setRetry] = useState(0);
   const [picking, setPicking] = useState(false), [target, setTarget] = useState<{kind:MaterialTarget;id:string}>();
   useEffect(() => { let alive = true; setError(''); setSources(undefined); request<MaterialSource[]>(`/nodes/${node.id}/material-sources`)
-    .then(r => {if(alive)setSources(r);}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;}; },[node.id,node.version,retry]);
+    .then(r => {if(alive)setSources(r);}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;}; },[node.id,node.version,retry,createdSourceId]);
   return <section className="context-section"><h3>手工关联资料</h3>
     {editable&&<Button onClick={async()=>{if(await prepare())setPicking(true);}}>关联到对象 / 事件 / 关系</Button>}
     <p className="context-hint">事实来源可在对象的「世界事实」中关联；关联不确认新事实。</p>

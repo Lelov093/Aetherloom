@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button, ErrorNotice } from "../../components/ui";
-import { creationApi } from "../creation/api";
+import { creationApi, type EntityDraft } from "../creation/api";
 import { ObjectBrowser } from "./ObjectBrowser";
 
 export function EntityChoice({
@@ -11,6 +11,8 @@ export function EntityChoice({
   kind,
   disabled = false,
   optional = false,
+  draft,
+  onStage,
 }: {
   world: string;
   label: string;
@@ -19,6 +21,8 @@ export function EntityChoice({
   kind?: string;
   disabled?: boolean;
   optional?: boolean;
+  draft?: EntityDraft;
+  onStage?: (draft: EntityDraft) => void;
 }) {
   const [name, setName] = useState(""),
     [error, setError] = useState(""),
@@ -54,10 +58,10 @@ export function EntityChoice({
           aria-haspopup="dialog"
           onClick={() => setOpen(true)}
         >
-          {name ||
+          {draft ? `${draft.name}（待创建）` : name ||
             (!value ? (optional ? "未指定" : "选择对象…") : "正在读取对象…")}
         </Button>
-        {optional && value && !disabled && (
+        {optional && (value || draft) && !disabled && (
           <Button
             type="button"
             variant="ghost"
@@ -75,6 +79,10 @@ export function EntityChoice({
           title={`选择${label}`}
           types={["entity"]}
           entityKind={kind}
+          onStage={onStage && (item => {
+            onStage(item);
+            setOpen(false);
+          })}
           onClose={() => setOpen(false)}
           onPick={(item) => {
             onChange(item.id);

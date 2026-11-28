@@ -45,11 +45,11 @@ def restore_bundle(backup, destination):
     return backup_bundle(backup / 'database.db', backup / 'resources', destination) / 'database.db'
 
 
-def migrate_shared(database, resources, backup_directory, *, target=2, hook=None):
+def migrate_shared(database, resources, backup_directory, *, target=2, hook=None, create_backup=None):
     """Known v0.2 schema8 -> additive V2; backup before any DDL, one transaction.
 
-    Explicit host/admin operation, NOT a user-facing route or automatic upgrade.
-    This round calls it only on synthetic databases. Requires stopped writers.
+    Requires stopped writers. A supplied create_backup must finish saving the
+    pre-upgrade bundle before the migration transaction begins.
     """
     database = Path(database).resolve()
     if not database.is_file():
@@ -61,7 +61,7 @@ def migrate_shared(database, resources, backup_directory, *, target=2, hook=None
         head = check_shared(check)
         if target <= head:
             return head  # no rewrite, reverse migration, or redundant backup
-    backup_bundle(database, resources, backup_directory)
+    (create_backup or backup_bundle)(database, resources, backup_directory)
     with closing(sqlite3.connect(database)) as conn:
         conn.execute('PRAGMA foreign_keys=ON')
         conn.execute('BEGIN IMMEDIATE')

@@ -5,12 +5,13 @@ import asyncio
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 from fastapi import APIRouter, UploadFile, Request, HTTPException, Form
 from fastapi.responses import FileResponse, Response
 from pydantic import Field, model_validator
 from .creation import CreationError, now, encoded
 from .creation_models import Model, WorkKind, NodeCreate, MaterialCategory, inspect_document, validate_metadata
+from .import_assets import find_import_original, read_import_batch
 from .import_formats import parse_file, text_document, markdown_document
 from .import_ocr import capabilities, recognize_page, render_page
 
@@ -92,14 +93,14 @@ class ImportCommit(Model):
 
 def read_batch(repo, world, batch_id):
     try:
-        batch_id = str(__import__('uuid').UUID(batch_id))
+        batch_id = str(UUID(batch_id))
     except ValueError:
         raise HTTPException(404, '找不到导入预览。')
     folder = repo.path.parent / 'imports' / batch_id
-    path = folder / 'preview.json'
-    if not path.exists():
+    try:
+        batch = read_import_batch(folder)
+    except FileNotFoundError:
         raise HTTPException(404, '找不到导入预览。')
-    batch = json.loads(path.read_text(encoding='utf-8'))
     if batch['world_id'] != world:
         raise HTTPException(404, '找不到导入预览。')
     return folder, batch
@@ -130,8 +131,8 @@ def source_file(world_id:str, batch_id:str, index:int, request:Request):
     if index<0 or index>=len(batch['files']):
         raise HTTPException(404, '找不到原始附件。')
     original = batch['files'][index]
-    path = (folder / original['asset']).resolve()
-    if not path.is_relative_to(folder.resolve()) or not path.is_file():
+    path = find_import_original(folder, original['asset'])
+    if path is None:
         raise HTTPException(404, '找不到原始附件。')
     return FileResponse(path, filename=original['name'])
 

@@ -21,18 +21,31 @@ declare global {
         role: Role,
         worldline?: string,
         actor?: string,
+        spoilerFree?: boolean,
       ): Promise<HostSession | null>;
       viewerLayout(worldline: string, value?: ViewerLayout, view?: string): Promise<ViewerLayout | null>;
     };
   }
+}
+export interface PerceptionRecord {
+  actor_id?: string | null;
+  channel?: "sight" | "sound";
+  facts?: Record<string, string>;
+  text?: string;
+}
+export interface PerceptionLayout {
+  zones: Record<string, string>;
+  positions: Record<string, string>;
+  links: { observer: string; source: string; sight: boolean; sound: boolean }[];
 }
 export interface Agent {
   location: string;
   goal?: string;
   known?: Record<string, unknown>;
   beliefs?: Record<string, unknown>;
-  memories?: { text: string; basis: string; source: unknown }[];
+  memories?: (PerceptionRecord & { text: string; basis: string; source: unknown })[];
   committed_plans?: unknown[];
+  waiting?: { until_tick: number | null };
   social?: SocialView;
 }
 export interface SocialView {
@@ -68,6 +81,17 @@ export interface Projection {
   policy_version: string;
   role: Role;
   historical: boolean;
+  spoiler_free?: boolean;
+  run?: { settings: RunSettings; used: number };
+  conflict_pending?: boolean;
+  pending_conflict?: PendingConflict;
+  premises?: {
+    ordinary: Record<string, OrdinaryPast>;
+    unknowns: Record<string, KeyUnknown>;
+    resolved: Record<string, { text: string; source: PremiseSource }>;
+  };
+  expression_options?: ExpressionOptions;
+  candidate_targets?: {id: string; name: string; location_name: string}[];
   seq: number | null;
   sim_time_tick: number | null;
   actor_id?: string;
@@ -78,6 +102,7 @@ export interface Projection {
       due_tick: number;
       priority: number;
       kind: string;
+      payload?: { text?: string; key?: string };
     }[];
   };
   autonomy?: {
@@ -88,8 +113,7 @@ export interface Projection {
     mode?: "rules" | "model";
   };
   execution?: {state:string; actor_id?:string|null;next_tick?:number|null;model_enabled:boolean;strategy:string};
-  model_budget?: { limit_micro: number; charged_micro: number; calls: number; max_calls: number;
-    allocation?: {limit_micro:number;charged_micro:number;calls:number;max_calls:number;used_input_tokens:number;input_tokens:number;used_output_tokens:number;output_tokens:number;elapsed_seconds:number;runtime_seconds:number;used_actions?:number;max_actions?:number;used_cognition?:number;max_cognition?:number} };
+  model_budget?: ModelBudget;
   capabilities: string[];
   control: { status: string; reason: string };
   agents: Record<string, Agent>;
@@ -98,9 +122,34 @@ export interface Projection {
     items: Record<string, string>;
     environment: Record<string, unknown>;
     readable_items?: string[];
+    item_texts?: Record<string, string>;
+    area?: string;
+    speech_recipients?: string[];
   };
 }
-export interface RuntimeEvent {
+
+interface ModelUsage {
+  sent_calls: number;
+  pending_calls: number;
+  committed_steps: number;
+  confirmed_micro: number;
+  held_micro: number;
+}
+
+export type ModelBudget = {
+  limit_micro?: number;
+  charged_micro?: number;
+  calls?: number;
+  max_calls?: number;
+  allocation?: {limit_micro:number;charged_micro:number;calls:number;max_calls:number;used_input_tokens:number;input_tokens:number;used_output_tokens:number;output_tokens:number;elapsed_seconds:number;runtime_seconds:number;used_actions?:number;max_actions?:number;used_cognition?:number;max_cognition?:number};
+  exploration?: ModelUsage & {
+    max_calls: number;
+    limit_micro: number;
+    line: ModelUsage;
+    recovery?: { status: 'commit_unknown' | 'commit_recovered' | 'not_committed' | 'check_required'; step: number; retry_approved?: boolean };
+  };
+};
+export interface RuntimeEvent extends PerceptionRecord {
   worldline_id?: string;
   location_id?: string;
   args?: Record<string, unknown>;
@@ -114,11 +163,38 @@ export interface RuntimeEvent {
   sim_time_before?: number;
   kind?: string;
   reason?: string;
-  text?: string;
+  message_kind?: 'speech' | 'private' | 'scene' | 'directed' | 'premise';
+  recipient_ids?: string[];
+  perceived_by?: string[];
+  witnesses?: Record<string, PerceptionRecord>;
+  concealed?: boolean;
+  ruling?: ActionRuling;
+  ruling_effects?: ({ op: 'agent_location_set'; entity_id: string; before: string; after: string }
+    | { op: 'item_holder_set'; item_id: string; before: string; after: string })[];
+  decision_source?: 'rules' | 'model';
+  observations?: ObservationCondition[];
+  expression?: { kind: 'original'; citation: OpeningCitation; text: string }
+    | { kind: 'line_past'; source: PremiseSource; text: string }
+    | { kind: 'key_unknown'; title: string; source: PremiseSource; text: string };
 }
 export interface ReplayEvent extends RuntimeEvent {
   sim_time_before?: number;
   source: {worldline_id:string;seq?:number;event_id?:string};
+}
+
+export interface ObservationCondition {
+  id: string;
+  title: string;
+  mode: 'mark' | 'pause';
+  event: 'scheduled' | 'move' | 'take' | 'transfer' | 'read';
+  target_id: string;
+}
+export interface RunSettings {
+  mode: 'continuous' | 'segment';
+  segment_steps: number;
+  observations: ObservationCondition[];
+  story_stop_tick?: number | null;
+  retry_once?: boolean;
 }
 export interface ReplayTimeline {
   worldline_id:string;
@@ -158,31 +234,128 @@ export interface Worldline {
 
 export interface BranchComparison {
   world_id: string;
-  common_anchor: { worldline_id: string; seq: number; state_hash: string } | null;
-  left: { worldline_id: string; title: string; purpose: string; seq: number; sim_time_tick: number; state_hash: string; control_status: string };
-  right: { worldline_id: string; title: string; purpose: string; seq: number; sim_time_tick: number; state_hash: string; control_status: string };
+  common_anchor: { worldline_id: string; seq: number; state_hash: string; sim_time_tick: number } | null;
+  left: ComparisonEndpoint;
+  right: ComparisonEndpoint;
   changes: { path: string; label: string; left: unknown; right: unknown; category?: string; entity_id?: string }[];
   events: { left: RuntimeEvent[]; right: RuntimeEvent[] };
+  events_truncated: boolean;
+}
+export interface ComparisonEndpoint {
+  worldline_id: string; title: string; purpose: string; seq: number; sim_time_tick: number;
+  state_hash: string; control_status: string; initial_tick: number; latest_tick: number; selected_tick: number;
 }
 
+export interface ScenarioScopeEntry {
+  key: string; id: string; kind: string; title: string; version: number; included: boolean; reasons: string[];
+}
+export interface ScenarioPeriod {
+  year: number | null;
+  side: 'before' | 'after' | null;
+  event: { id: string; title: string; version?: number } | null;
+}
+export interface OpeningCitation { node_id: string; version: number; start: number; end: number }
+export interface OrdinaryPast { text: string; witnesses: string[] }
+export interface KeyUnknown { title: string; may_resolve: boolean; knowers: string[] }
+export interface PremiseSource { worldline_id: string; seq: number }
+export type AttemptAction = { kind: 'move'; destination_id: string } | { kind: 'take'; item_id: string }
+  | { kind: 'transfer'; item_id: string; recipient_id: string };
+export interface PendingConflict {
+  source: PremiseSource;
+  detail: { kind: 'item'; item_id: string; holder_id: string; claims: { actor_id: string; blocker: string | null }[] }
+    | { kind: 'consequence'; description: string };
+}
+export type ActionRuling = { kind: 'attempt'; attempt: { actor_id: string; action: AttemptAction }; location_id: string; required_items: string[] }
+  | { kind: 'conflict'; conflict: PendingConflict; result: 'pending' | 'blocked' | 'rules' | 'draw' | 'chosen' | 'cancelled';
+      winner_id: string | null; draw_index: number | null };
+export interface ExpressionOptions {
+  past: Record<string, string>;
+  basis: Record<string, 'original' | 'premise'>;
+}
+export interface OpeningRuleCheck {
+  id: string; title: string; version: number; status: 'reference' | 'supported' | 'blocked';
+  consequence?: string; holder_name?: string;
+}
+export interface OpeningRoleCheck {
+  id: string; name: string; candidate: boolean; location_id: string; location_name: string; chosen: boolean;
+  options: {id: string; name: string; records: {id: string; version: number}[]}[];
+  input?: {
+    goal: string; voice_sample: string;
+    knowledge: Record<string, {text: string; basis: 'initial' | 'experienced' | 'reported'}>;
+    beliefs: Record<string, string>; citations: Record<string, OpeningCitation>;
+    expression?: ExpressionOptions;
+    perception: { location: string; exits: string[]; people: Record<string, {location: string}>; items: Record<string, string> };
+    profile: { place_names: Record<string, string>; people_names: Record<string, string>; item_names: Record<string, string> };
+  };
+}
+export interface OpeningCheck {
+  blockers: {kind: 'role' | 'rule'; id: string; message: string}[];
+  roles: OpeningRoleCheck[];
+  rules: OpeningRuleCheck[];
+  reference_people: {id: string; name: string; version: number}[];
+  observation_question: string;
+  reopen?: ReopenDifference;
+}
+
+interface FrozenSelection {
+  index: number;
+  version: number;
+  start: number;
+  end: number;
+  quote: string;
+}
+
+export interface ReopenDifference {
+  worldline_id: string;
+  title: string;
+  materials: { id: string; title: string; before: FrozenSelection[]; after: FrozenSelection[] }[];
+  scope: { id: string; title: string; before: {title: string; version: number} | null; after: {title: string; version: number} | null }[];
+  run_settings: RunSettings | null;
+  omitted_observations: string[];
+}
+export interface AuthoredStart {
+  origin: { id: string; path: string; work_id: string; work_title: string } | null;
+  opening: { mode: 'continue' | 'custom'; time: string; location_id: string; location_name: string;
+    location_version: number; situation: string; material_index: number | null;
+    anchor?: { title: string; path: string; version: number; start: number; end: number } };
+  period: ScenarioPeriod;
+  scope: ScenarioScopeEntry[];
+  readiness?: OpeningCheck;
+}
+export function scenarioPeriodLabel(period: ScenarioPeriod) {
+  if (period.year !== null) return `${period.year} 年`;
+  return period.event ? `${period.event.title}${period.side === 'before' ? '之前' : '之后'}` : '未限定时期';
+}
+export const openingLabels = { continue: '接着所选内容', custom: '自定开场' };
 export interface ExperienceScene {
   series_id: string; series_version: number; asset_version: string; title: string; purpose: string;
   places: Record<string, {name: string; description: string}>;
   actors: Record<string, {name: string; avatar: number; persona?: string}>;
   items: Record<string, {name: string; description: string;text?:string}>;
+  observation_names?: Record<string, string>;
   background?: string; adaptations?: string;
+  preparation?: AuthoredStart;
+  reopen?: ReopenDifference;
   initial_setup?: {
     role_locations: Record<string, string>;
     item_holders: Record<string, string>;
     exits: Record<string, string[]>;
     access_rules: {destination_id: string; item_id: string}[];
+    perception?: PerceptionLayout;
   };
   sources?: Record<string, {entity_id: string; entity_version: number}>;
   materials?: {node_id: string; version: number; start: number; end: number; purpose: string; title: string; work_id: string; work_title: string}[];
 }
 export const purposeNames: Record<string,string> = {original_projection:'原作推演',template_parallel:'模板平行世界',sandbox:'自由沙盒'};
 export function displayName(p: Projection, id: string | null | undefined): string {
-  return id ? p.scene?.actors[id]?.name || p.scene?.places[id]?.name || p.scene?.items[id]?.name || id : '世界';
+  return id ? p.scene?.actors[id]?.name || p.scene?.places[id]?.name || p.scene?.items[id]?.name || p.scene?.observation_names?.[id] || id : '世界';
+}
+export function perceptionText(p: Projection, record: PerceptionRecord): string {
+  const facts = record.facts;
+  if (record.channel === "sight" && facts?.item_id && facts.recipient_id) {
+    return `看到${displayName(p, record.actor_id)}将${displayName(p, facts.item_id)}交给${displayName(p, facts.recipient_id)}。`;
+  }
+  return record.text || "已有一条感知记录。";
 }
 export function evidenceText(value: unknown): string {
   if(typeof value==='string')return value;

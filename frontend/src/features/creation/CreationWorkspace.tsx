@@ -9,6 +9,7 @@ import {
   FileText,
   FolderOpen,
   Settings2,
+  Download,
 } from "lucide-react";
 import { Button, Dialog, EmptyState, ErrorNotice } from "../../components/ui";
 import { NumberInput, TypeCombobox } from '../../components/FormControls';
@@ -17,10 +18,13 @@ import { ImportDialog } from "./ImportDialog";
 import { MaterialClassification, materialCategories } from './MaterialClassification';
 import { ContentLibrary } from './ContentLibrary';
 import { WorkContents } from './WorkContents';
+import { WorkNarrative } from './Narrative';
+import { workNarrativePath } from './narrativeApi';
 import { PanelResize, useCreatePanel } from './CreatePanel';
 import { useWorkspaceTrail } from "../../components/WorkspaceContext";
 const ContentEditor = lazy(() => import('./ContentEditor').then(module => ({ default: module.ContentEditor })));
 import { DisplayImage, DisplayImageEditor, useDisplayImages } from '../objects/DisplayImages';
+import { WorkspaceExport } from '../export/WorkspaceExport';
 import {
   creationApi,
   workKinds,
@@ -38,6 +42,7 @@ export function CreationWorkspace({ world }: { world: string }) {
   const library = params.get('view') === 'library';
   const { images: covers } = useDisplayImages(world, 'work');
   const [coverEditing, setCoverEditing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [nodeLoading, setNodeLoading] = useState(false), [nodeRetry, setNodeRetry] = useState(0);
   const [openedWork, setOpenedWork] = useState<string>();
   const [works, setWorks] = useState<Work[]>([]),
@@ -172,15 +177,19 @@ export function CreationWorkspace({ world }: { world: string }) {
         ]
       : [],
   );
-  function effective(n: ContentNode) {
+  function effective(n: ContentNode, allowArchived = false) {
     let parent = n.parent_id;
     while (parent) {
       const p = byId.get(parent);
-      if (!p || p.status !== "active") return false;
+      if (!p || (p.status !== "active" && !(allowArchived && p.status === "archived"))) return false;
       parent = p.parent_id;
     }
     return true;
   }
+  const nodeWork = works.find(item => item.id === node?.work_id);
+  const activeContent = node && nodeWork?.status === 'active' && node.status === 'active' && effective(node);
+  const archivedReading = Boolean(node && nodeWork && !activeContent && params.get('mode') === 'read' &&
+    nodeWork.status !== 'deleted' && node.status !== 'deleted' && effective(node, true));
   function treeRows(parentId: string | null, depth = 0): React.ReactNode {
     return nodes
       .filter(
@@ -452,12 +461,14 @@ export function CreationWorkspace({ world }: { world: string }) {
         )}
         {loading ? (
           <p className="creation-loading">正在打开作品…</p>
-        ) : library ? <ContentLibrary world={world} works={works}/> : selectedNode && !node ? <div className="creation-empty content-entry-page" aria-busy={!error}><p role="status">{error ? '所选资料未能打开，请重试。' : '正在准备阅读内容…'}</p></div> : works.find(w => w.id === node?.work_id)?.status === 'active' &&
-          node &&
-          node.status === "active" &&
-          effective(node) ? (
+        ) : library ? <ContentLibrary world={world} works={works}/>
+          : work && !selectedNode && params.get('view') === 'narrative'
+            ? <WorkNarrative key={work.id} world={world} work={work} directory={nodes} />
+          : selectedNode && !node ? <div className="creation-empty content-entry-page" aria-busy={!error}><p role="status">{error ? '所选资料未能打开，请重试。' : '正在准备阅读内容…'}</p></div> :
+          node && (activeContent || archivedReading) ? (
           <Suspense fallback={<p className="creation-loading">正在准备编辑器…</p>}>
             <ContentEditor
+              key={archivedReading ? 'archived' : 'active'}
               initial={node}
               entities={entities}
               world={world}
@@ -467,6 +478,7 @@ export function CreationWorkspace({ world }: { world: string }) {
               onToggleTree={() => setTree(!tree)}
               onResetTreeWidth={() => leftPanel.setWidth(280)}
               switching={node.id !== selectedNode || node.work_id !== selectedWork}
+              archivedReading={archivedReading}
               directory={['volume','act'].includes(node.kind)||nodes.some(n=>n.parent_id===node.id&&n.status==='active') ? <WorkContents world={world} nodes={nodes} parent={node.id}/> : undefined}
             />
           </Suspense>
@@ -499,6 +511,8 @@ export function CreationWorkspace({ world }: { world: string }) {
                 : "从已有设定、大纲或正文开始，作品共享这个世界的对象与正式设定。"}
             </p>
             <div className="creation-entry-actions">
+              {work && <Link className="text-link" to={workNarrativePath(world, work.id)}>作品叙事与线索 <ChevronRight size={14} /></Link>}
+              {work?.status === 'active' && window.aetherloomExport && <Button variant="ghost" onClick={() => setExporting(true)}><Download size={16}/>导出作品</Button>}
               {work ? (
                 <Button
                   variant="primary"
@@ -544,6 +558,7 @@ export function CreationWorkspace({ world }: { world: string }) {
         )}
       </div>
       {coverEditing && work && <DisplayImageEditor owner="work" id={work.id} name={work.title} world={world} onClose={() => setCoverEditing(false)}/>}
+      {exporting && work && <WorkspaceExport world={world} work={work} onClose={() => setExporting(false)}/>}
       {creatingWork && (
         <ResourceForm
           title="创建作品"

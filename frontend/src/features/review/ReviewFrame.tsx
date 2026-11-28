@@ -5,15 +5,17 @@ import { Button, Dialog } from '../../components/ui';
 
 export function ReviewInboxHeader({ world, simulation = false }: { world: string; simulation?: boolean }) {
   return <header className="review-inbox-heading"><span className="eyebrow">REVIEW</span><h1><Inbox size={22}/>审阅收件箱</h1>
-    <p>核对来处，再决定哪些内容属于你的世界。</p>
+    <p>{simulation ? '查阅已保存的模拟提案和来源。' : '核对来处，再决定哪些内容属于你的世界。'}</p>
     <nav className="review-source-tabs" aria-label="审阅来源">
-      <Link aria-current={!simulation ? 'page' : undefined} to={`/worlds/${world}/review`}><FileText size={14}/>正文候选</Link>
-      <Link aria-current={simulation ? 'page' : undefined} to={`/worlds/${world}/review/simulation`}><GitBranch size={14}/>模拟提案</Link>
+      <Link aria-current={!simulation ? 'page' : undefined} to={`/worlds/${world}/review/history`}><FileText size={14}/>正文候选</Link>
+      <Link aria-current={simulation ? 'page' : undefined} to={`/worlds/${world}/review/simulation`}><GitBranch size={14}/>历史模拟提案</Link>
     </nav></header>;
 }
 
-export function ReviewStatusTabs({ status, pending, onChange }: { status: string; pending: number; onChange: (value: string) => void }) {
-  const tabs = [['pending', '待处理'], ['processed', '已处理'], ['all', '全部']];
+export function ReviewStatusTabs({ status, pending, onChange, pendingLabel = '待处理' }: {
+  status: string; pending: number; onChange: (value: string) => void; pendingLabel?: string;
+}) {
+  const tabs = [['pending', pendingLabel], ['processed', '已处理'], ['all', '全部']];
   return <div className="quiet-tabs" role="tablist" aria-label="审阅状态">{tabs.map(([value, label], index) => <button key={value} type="button" role="tab" aria-selected={status === value} tabIndex={status === value ? 0 : -1} onClick={() => onChange(value)} onKeyDown={event => {
     let next = index;
     if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;

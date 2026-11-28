@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Link,
+  Navigate,
   Route,
   Routes,
   useNavigate,
@@ -11,7 +12,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
-  CheckCheck,
+  Feather,
   Compass,
   Globe2,
   Home,
@@ -41,6 +42,7 @@ import { InspirationLibrary } from '../features/creation/InspirationLibrary';
 const SimulationWorkspace=lazy(()=>import('../features/simulation/SimulationWorkspace').then(m=>({default:m.SimulationWorkspace})));
 const SimulationReview=lazy(()=>import('../features/simulation/SimulationReview').then(m=>({default:m.SimulationReview})));
 const ExploreWorkspace=lazy(()=>import('../features/explore/ExploreWorkspace').then(m=>({default:m.ExploreWorkspace})));
+const AuthorMaps=lazy(()=>import('../features/maps/AuthorMaps').then(m=>({default:m.AuthorMaps})));
 const RuntimeWorkspace=lazy(()=>import('../features/runtime/RuntimeWorkspace').then(m=>({default:m.RuntimeWorkspace})));
 import {
   WorkspaceContext,
@@ -56,7 +58,10 @@ function Shell({
 }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const reviewActivity = useReviewActivity(world?.id);
+  const inLegacyReview = location.pathname.includes('/review');
+  const inInspirations = location.pathname.includes('/inspirations');
+  const atHome = location.pathname === (world ? `/worlds/${world.id}` : '/');
+  const reviewActivity = useReviewActivity(inLegacyReview ? world?.id : undefined);
   useWorkspaceResume(world?.id);
   const [searching, setSearching] = useState(false);
   const [browsing, setBrowsing] = useState(false);
@@ -69,7 +74,7 @@ function Shell({
       data-create-editor={Boolean(world && location.pathname === `/worlds/${world.id}/create`)}
       data-simulation-live={Boolean(world && [ `/worlds/${world.id}/simulate`, `/worlds/${world.id}/simulate/runtime` ].includes(location.pathname) && ['session','line'].some(key=>new URLSearchParams(location.search).has(key)))}
       data-workspace={
-        location.pathname.includes("/review") ? "review" : location.pathname.includes('/explore') ? 'explore' : location.pathname.includes('/simulate') ? 'simulate' : "create"
+        inLegacyReview ? 'review' : inInspirations ? 'inspirations' : location.pathname.includes('/explore') ? 'explore' : location.pathname.includes('/simulate') ? 'simulate' : 'create'
       }
     >
       <a
@@ -115,8 +120,9 @@ function Shell({
             </div>
           </details> : <span>
             {world
-              ? location.pathname.includes("/review")
-                ? "审阅"
+              ? inLegacyReview
+                ? "旧审阅记录"
+                : inInspirations ? "灵感库"
                 : location.pathname.includes('/explore') ? '探索' : location.pathname.includes('/simulate') ? '模拟' : location.pathname.includes("/create")
                   ? "创作"
                   : "世界首页"
@@ -149,7 +155,7 @@ function Shell({
         </nav>
         <div id="workspace-header-slot" className="workspace-header-slot" />
         <div className="topbar-context">
-          {world && <ActivityNotice key={world.id} world={world.id} {...reviewActivity} />}
+          {world && inLegacyReview && <ActivityNotice key={world.id} world={world.id} {...reviewActivity} />}
           {world && (
             <Button variant="ghost" aria-label="浏览世界对象" onClick={() => setBrowsing(true)}>
               <BookOpen size={18} />
@@ -183,15 +189,8 @@ function Shell({
         <nav aria-label="工作区">
           <Link
             to={world ? `/worlds/${world.id}` : "/"}
-            className={`rail-item ${!location.pathname.includes("/create") && !location.pathname.includes("/review") && !location.pathname.includes('/simulate') && !location.pathname.includes('/explore') ? "active" : ""}`}
-            aria-current={
-              !location.pathname.includes("/create") &&
-              !location.pathname.includes('/simulate') &&
-              !location.pathname.includes('/explore') &&
-              !location.pathname.includes("/review")
-                ? "page"
-                : undefined
-            }
+            className={`rail-item ${atHome ? 'active' : ''}`}
+            aria-current={atHome ? 'page' : undefined}
           >
             <Home size={22} strokeWidth={1.5} />
             <span>首页</span>
@@ -217,20 +216,17 @@ function Shell({
           {world ? <Link to={workspaceDestination(world.id,'explore')} className={`rail-item ${location.pathname.includes('/explore') ? 'active' : ''}`} aria-current={location.pathname.includes('/explore') ? 'page' : undefined}><Compass size={22} strokeWidth={1.5}/><span>探索</span></Link> : <button className="rail-item" disabled><Compass size={22}/><span>探索</span></button>}
           {world ? (
             <Link
-              to={workspaceDestination(world.id,'review')}
-              className={`rail-item ${location.pathname.includes("/review") ? "active" : ""}`}
-              aria-current={
-                location.pathname.includes("/review") ? "page" : undefined
-              }
+              to={workspaceDestination(world.id,'inspirations')}
+              className={`rail-item ${inInspirations ? 'active' : ''}`}
+              aria-current={inInspirations ? 'page' : undefined}
             >
-              <CheckCheck size={22} strokeWidth={1.5} />
-              <span>审阅</span>
-              {reviewActivity.activity && reviewActivity.activity.pending + reviewActivity.activity.simulation_pending > 0 && <span className="review-badge" aria-label={`${reviewActivity.activity.pending + reviewActivity.activity.simulation_pending} 项待审阅`}>{reviewActivity.activity.pending + reviewActivity.activity.simulation_pending}</span>}
+              <Feather size={22} strokeWidth={1.5} />
+              <span>灵感库</span>
             </Link>
           ) : (
             <button className="rail-item" disabled>
-              <CheckCheck size={22} />
-              <span>审阅</span>
+              <Feather size={22} />
+              <span>灵感库</span>
             </button>
           )}
           <div className="rail-divider" />
@@ -269,7 +265,7 @@ function Shell({
 function WorldRoute({
   view = "home",
 }: {
-  view?: "home" | "create" | "objects" | "entity" | "review" | "records" | "source" | 'simulate' | 'sim-review' | 'explore' | 'runtime' | 'inspirations';
+  view?: "home" | "create" | "objects" | "entity" | "review" | "records" | "source" | 'simulate' | 'sim-review' | 'explore' | 'maps' | 'runtime' | 'inspirations';
 }) {
   const { id } = useParams();
   const [world, setWorld] = useState<World>();
@@ -303,6 +299,7 @@ function WorldRoute({
           </Link>
         </main>
       ) : world && view === 'runtime' ? <Suspense fallback={<p role="status">正在打开世界观察…</p>}><RuntimeWorkspace key={world.id} world={world.id}/></Suspense> : world ? (
+        view === 'maps' ? <Suspense fallback={<main id="main-content" className="page loading-state" role="status">正在打开作者地图…</main>}><AuthorMaps key={world.id} world={world.id} archived={world.archived}/></Suspense> :
         view === 'explore' ? <Suspense fallback={<main id="main-content" className="page loading-state" role="status">正在打开世界关系…</main>}><ExploreWorkspace key={world.id} world={world.id}/></Suspense> : view === 'simulate' ? <Suspense fallback={<p role="status">正在打开世界模拟…</p>}><SimulationWorkspace key={world.id} world={world.id}/></Suspense> : view === 'sim-review' ? <Suspense fallback={<p role="status">正在打开模拟审阅…</p>}><SimulationReview key={world.id} world={world.id}/></Suspense> : view === "source" ? (
           <SourceReader world={world.id}/>
         ) : view === "review" ? (
@@ -312,11 +309,11 @@ function WorldRoute({
         ) : view === "create" ? (
           <CreationWorkspace key={world.id} world={world.id} />
         ) : view === "objects" ? (
-          <WorldObjects key={world.id} world={world.id} />
+          <WorldObjects key={world.id} world={world.id} archived={world.archived} />
         ) : view === "entity" ? (
           <EntityFullView key={world.id} world={world.id} />
         ) : view === "inspirations" ? (
-          <InspirationLibrary key={world.id} world={world.id} />
+          <InspirationLibrary key={world.id} world={world.id} archived={world.archived} />
         ) : (
           <WorldHome key={world.id} world={world} onUpdated={setWorld} />
         )
@@ -327,6 +324,13 @@ function WorldRoute({
       )}
     </Shell>
   );
+}
+
+function ReviewEntry() {
+  const { id } = useParams();
+  const { search } = useLocation();
+  if (new URLSearchParams(search).get('candidate')) return <WorldRoute view="review" />;
+  return <Navigate replace to={`/worlds/${id}/inspirations`} />;
 }
 
 export function App() {
@@ -344,11 +348,13 @@ export function App() {
       <Route path="/worlds/:id/create" element={<WorldRoute view="create" />} />
       <Route path="/worlds/:id/create/sources/:sourceId" element={<WorldRoute view="source"/>}/>
       <Route path="/worlds/:id/create/source" element={<WorldRoute view="source"/>}/>
-      <Route path="/worlds/:id/review" element={<WorldRoute view="review" />} />
+      <Route path="/worlds/:id/review" element={<ReviewEntry />} />
+      <Route path="/worlds/:id/review/history" element={<WorldRoute view="review" />} />
       <Route path="/worlds/:id/review/simulation" element={<WorldRoute view="sim-review"/>}/>
       <Route path="/worlds/:id/simulate" element={<WorldRoute view="simulate"/>}/>
       <Route path="/worlds/:id/simulate/runtime" element={<WorldRoute view="runtime"/>}/>
       <Route path="/worlds/:id/explore" element={<WorldRoute view="explore"/>}/>
+      <Route path="/worlds/:id/explore/maps" element={<WorldRoute view="maps"/>}/>
       <Route path="/worlds/:id/inspirations" element={<WorldRoute view="inspirations"/>}/>
       <Route
         path="/worlds/:id/create/records"

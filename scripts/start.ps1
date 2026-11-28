@@ -1,9 +1,11 @@
-﻿param([switch]$Academy)
+﻿param([switch]$Academy, [switch]$TextSimulation, [switch]$SourceWorkspace)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$TextSimulation = $TextSimulation -or $SourceWorkspace
 $environmentNames = @('UV_CACHE_DIR', 'npm_config_cache', 'electron_config_cache')
-if ($Academy) {
+if ($SourceWorkspace) { $environmentNames += @('AETHERLOOM_DB', 'ELECTRON_GET_USE_PROXY') }
+if ($Academy -or $TextSimulation) {
     $environmentNames += @('AETHERLOOM_VNEXT_DB', 'AETHERLOOM_VNEXT_ENABLED', 'AETHERLOOM_VNEXT_LAYOUT', 'AETHERLOOM_VNEXT_INTERACTIVE')
 }
 $previousEnvironment = @{}
@@ -12,17 +14,31 @@ foreach ($name in $environmentNames) {
 }
 Push-Location $projectRoot
 try {
+    if ($SourceWorkspace) {
+        node (Join-Path $projectRoot 'frontend\electron\launch.cjs') --aetherloom-focus
+        if ($LASTEXITCODE -eq 0) { return }
+        if ($LASTEXITCODE -ne 2) { throw '无法打开已运行的桌面窗口。' }
+        if ($env:HTTPS_PROXY -or $env:HTTP_PROXY) { $env:ELECTRON_GET_USE_PROXY = '1' }
+    }
     $env:UV_CACHE_DIR = Join-Path $projectRoot '.cache\uv'
     $env:npm_config_cache = Join-Path $projectRoot '.cache\npm'
     $env:electron_config_cache = Join-Path $projectRoot '.cache\electron'
     uv sync --frozen
     if ($LASTEXITCODE -ne 0) { throw 'Python 环境准备失败。' }
-    if ($Academy) {
-        $database = if ($env:AETHERLOOM_DB) { $env:AETHERLOOM_DB } else { Join-Path $projectRoot '.data\aetherloom.db' }
+    if ($Academy -or $TextSimulation) {
         $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
-        & $python (Join-Path $PSScriptRoot 'academy_database.py') $database
+        $workspaceTool = Join-Path $PSScriptRoot 'academy_database.py'
+        if ($SourceWorkspace -and -not $env:AETHERLOOM_DB) {
+            $env:AETHERLOOM_DB = Join-Path $projectRoot '.data\workspace\aetherloom.db'
+            if (-not (Test-Path -LiteralPath $env:AETHERLOOM_DB)) {
+                & $python $workspaceTool $env:AETHERLOOM_DB --new-workspace
+                if ($LASTEXITCODE -ne 0) { throw '空工作区创建失败。请核对资料库路径。' }
+            }
+        }
+        $database = if ($env:AETHERLOOM_DB) { $env:AETHERLOOM_DB } else { Join-Path $projectRoot '.data\aetherloom.db' }
+        & $python $workspaceTool $database
         if ($LASTEXITCODE -ne 0) {
-            throw '学院入口需要已准备的共享资料库。请核对 AETHERLOOM_DB，或使用 scripts/academy_database.py 的 --new-workspace 选项创建空工作区。'
+            throw '文本模拟需要已准备的共享资料库。请核对 AETHERLOOM_DB，或使用 scripts/academy_database.py 的 --new-workspace 选项创建空工作区。'
         }
         $env:AETHERLOOM_VNEXT_DB = $database
         $env:AETHERLOOM_VNEXT_ENABLED = '1'
@@ -33,7 +49,7 @@ try {
         npm --prefix frontend ci
         if ($LASTEXITCODE -ne 0) { throw '前端依赖安装失败。' }
     }
-    if ($env:AETHERLOOM_VNEXT_ENABLED -eq '1') {
+    if ($env:AETHERLOOM_VNEXT_ENABLED -eq '1' -and ($Academy -or -not $TextSimulation)) {
         try {
             & (Join-Path $PSScriptRoot 'build-godot.ps1')
         } catch {

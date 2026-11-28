@@ -14,6 +14,47 @@ export function groupEdges(graph: ExploreGraph): EdgeGroup[] {
   return [...groups.values()];
 }
 
+/** Pack disconnected groups independently so the world view has no synthetic focus. */
+export function arrangeOverview(graph: ExploreGraph): Record<string, XYPosition> {
+  const neighbors = new Map(graph.nodes.map(node => [node.key, new Set<string>()]));
+  for (const { source, target } of graph.edges) {
+    neighbors.get(source)?.add(target);
+    neighbors.get(target)?.add(source);
+  }
+  const positions: Record<string, XYPosition> = {};
+  const seen = new Set<string>();
+  const nodes = [...graph.nodes].sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key));
+  const rowWidth = Math.max(810, Math.ceil(Math.sqrt(nodes.length)) * 235);
+  let x = 0, y = 0, rowHeight = 0;
+  for (const { key } of nodes) {
+    if (seen.has(key)) continue;
+    const group = [key];
+    seen.add(key);
+    for (const member of group) {
+      for (const other of neighbors.get(member)!) {
+        if (!seen.has(other)) {
+          seen.add(other);
+          group.push(other);
+        }
+      }
+    }
+    const columns = Math.ceil(Math.sqrt(group.length));
+    const width = (columns - 1) * 180 + 128;
+    const height = (Math.ceil(group.length / columns) - 1) * 190 + 112;
+    if (x && x + width > rowWidth) {
+      x = 0;
+      y += rowHeight + 80;
+      rowHeight = 0;
+    }
+    group.forEach((member, index) => {
+      positions[member] = { x: x + (index % columns) * 180, y: y + Math.floor(index / columns) * 190 };
+    });
+    x += width + 92;
+    rowHeight = Math.max(rowHeight, height);
+  }
+  return positions;
+}
+
 /** Stable ego layout: no continuously running physics, and no movement of
  * existing neighbours during expansion. Node dragging affects display only. */
 export function arrange(graph: ExploreGraph, previous: Record<string, XYPosition> = {}): Record<string, XYPosition> {

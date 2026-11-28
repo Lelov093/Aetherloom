@@ -7,6 +7,7 @@ import secrets
 from pydantic import ValidationError
 
 from .contracts import INTERACTIVE_STATES
+from .contracts import ADJUDICATION_ARGS
 from .contracts import ActionIntent, CommandIntent, RuntimeAggregate, ENGINE, CONTRACT, INTERACTIVE_STATE
 from .domain import RuntimeFault, canonical
 from .store import RuntimeStore
@@ -119,7 +120,7 @@ class RuntimeService:
         grant = self._authorize(token, worldline, permission)
         try:
             intent = (ActionIntent if kind == 'actor_action' else CommandIntent).model_validate(payload)
-            if kind != 'actor_action' and intent.action_type not in {'cognition':{'cognition'}, 'creator_intervention':{'environment','relocate','scene_event','schedule'}, 'scheduled_event':{'trigger','advance_idle'}}[kind]:
+            if kind != 'actor_action' and intent.action_type not in {'cognition':{'cognition'}, 'creator_intervention':{'environment','relocate','scene_event','candidate_invite','resolve_unknown','schedule',*ADJUDICATION_ARGS}, 'scheduled_event':{'trigger','advance_idle'}}[kind]:
                 raise RuntimeFault('unsupported_command')
             intent.typed_args()
             canonical(intent.model_dump())
@@ -144,7 +145,9 @@ class RuntimeService:
         if mode == 'model':
             state = self._store.read_at(worldline)
             ledger = getattr(self.model_policy, 'ledger', None)
-            allowance = ledger.allocation(worldline) if ledger else None
+            allowance = self.model_policy.allocation(state) if ledger else None
+            if ledger and ledger.shared and not allowance:
+                raise RuntimeFault('worldline_model_budget_required')
             if state.social and not allowance:
                 raise RuntimeFault('worldline_model_budget_required')
             if state.lineage and not allowance:
@@ -159,13 +162,20 @@ class RuntimeService:
         self._authorize(token, worldline, 'read')
         return self._store.baseline(worldline)
 
-    def control(self, token, worldline, *, resume=False):
+    def control(self, token, worldline, *, resume=False, reason=''):
         self._authorize(token, worldline, 'control')
-        result = self._store.control(worldline, resume)
-        if self.model_policy:
+        ledger = getattr(self.model_policy, 'ledger', None)
+        if resume and ledger and ledger.shared:
+            state, control = self.model_policy.current(worldline)
+            if control['status'] == 'paused' and self.model_policy.exploration_for(state):
+                self.model_policy.before_resume(state, control)
+        result = self._store.control(worldline, resume, reason=reason)
+        if ledger and ledger.shared:
+            self.model_policy.sync_explorations()
+        elif ledger:
             import json
             policy=json.loads(result['ledger']).get('autonomy',{})
-            self.model_policy.ledger.set_active(worldline,bool(resume and policy.get('enabled') and policy.get('mode')=='model'))
+            ledger.set_active(worldline,bool(result['status']=='running' and policy.get('enabled') and policy.get('mode')=='model'))
         return result
 
     def diagnostic(self, token, worldline):
@@ -174,7 +184,7 @@ class RuntimeService:
 
     def shutdown(self):
         ledger=getattr(self.model_policy,'ledger',None)
-        if ledger and ledger.version==2:
+        if ledger and ledger.version >= 2:
             with ledger.connection() as conn: lines=[r[0] for r in conn.execute('SELECT worldline FROM allocations')]
             for line in lines: ledger.set_active(line,False)
         if self._store is not None:

@@ -2,7 +2,7 @@
 import json
 import re
 
-from .contracts import READING_STATE
+from .contracts import PerceivedMemory, READING_STATE
 from .domain import RuntimeFault
 from .social_models import GroundedEvidence
 
@@ -32,7 +32,8 @@ def evidence_type(record):
     if record.basis == 'reported': return 'report'
     if record.basis == 'read': return 'read_text'
     if record.basis == 'checked': return 'text_comparison'
-    if record.basis == 'initial': return 'initial'
+    if record.basis in ('initial', 'experienced'): return 'initial'
+    if isinstance(record, PerceivedMemory): return 'event_observation'
     if observation_view(record) is not None: return 'historical_observation'
     return 'subjective' if record.action_type == 'cognition' else 'action_result'
 

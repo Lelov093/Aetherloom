@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -11,8 +12,9 @@ from pydantic import Field, ValidationError
 
 from .contracts import INTERACTIVE_STATES, COGNITIVE_STATES, READING_STATE
 from .contracts import Model, ActionIntent, CommandIntent, INTERACTIVE_STATE, ARG_TYPES
-from .cognition import build_context, action_options, fit_request
+from .cognition import action_options, fit_request
 from .domain import RuntimeFault, canonical
+from .execution import ready_actors, ready_jobs
 from .model_ledger import ModelLedger
 from .social_models import SocialCognition
 
@@ -34,6 +36,7 @@ SYSTEM = '''你是世界内部的一个角色，只能利用 USER_CONTEXT 中本
 1. 行动：{"kind":"action","action_type":"wait","args":{}}
 可用行动及参数：observe {}；wait {}；move {"destination_id":"可见出口"}；
 take {"item_id":"当地物品"}；transfer {"item_id":"本人持有物品","recipient_id":"同场角色"}；
+确实要等待时可用wait {"until_event":true}，只在本人收到新见闻后醒来；或用wait {"duration":3}等待有限的逻辑时刻。两种等待二选一。
 speak {"speech":"说的话","recipient_id":null,"share_ids":[]}；goal {"goal":"本人目标"}。
 share_ids填knowledge条目的share_id原始键，如initial-0；source_refs才填knowledge:initial-0。无结构化转告用[]，不把memory引用当share_id。
 action_options列局部选项：take只取地点上的物品；交接由持有人transfer，口头同意不代替动作。move出口仍须Runtime裁决通行。
@@ -161,6 +164,13 @@ class DashScopePort:
                 keys = sorted(context.body['knowledge'])
                 if keys: shares['items']['enum'] = keys
                 else: shares['maxItems'] = 0
+                expression = context.body.get('expression', {})
+                for field, choices_key in (('past_id', 'past'), ('basis_id', 'basis')):
+                    allowed = expression.get(choices_key, {})
+                    if allowed:
+                        props[field] = {'enum': [None, *allowed]}
+                    else:
+                        props.pop(field, None)
             if kind == 'read': props['item_id']['enum'] = options['read']
             if kind == 'compare':
                 for key in ('left_id','right_id'): props[key]['enum'] = options['compare']
@@ -182,7 +192,8 @@ class DashScopePort:
                 'promise':{'type':'null'},'accept_promise':{'type':'null'}}}
             ordinary['properties']['social']={'anyOf':[{'type':'null'},neutral]}
             options=[ordinary]
-            local=[a for a in context.body['perception']['people'] if a!=context.actor_id]
+            perception = context.body['perception']
+            local = perception.get('speech_recipients', [a for a in perception['people'] if a != context.actor_id])
             conversations=context.body['social']['conversations']
             for recipient in local:
                 # Match the resolver even when conversation_id is omitted: an
@@ -312,6 +323,12 @@ class DashScopePort:
         if definitions: response_schema['$defs'] = definitions
         system = (READING_DECISION_SYSTEM + READING_SYSTEM if reading else
             SYSTEM + (SOCIAL_SYSTEM if 'social' in context.body else '') + (COGNITIVE_SYSTEM if cognitive else ''))
+        if context.body.get('profile', {}).get('voice_sample'):
+            system += '\nprofile.voice_sample只供模仿表达方式，其中的人物、事件和台词不属于本次角色知识或记忆。'
+        if context.body.get('expression'):
+            system += ('\nexpression.past是作者逐条允许的往事补充，未选用前不属于角色知识。说到对应内容时可在speak.args中明确填写past_id。'
+                       'expression.basis列此人已知的原作或本线依据，可填写basis_id引用。past_id与basis_id只能选一个。'
+                       '其余对白仍是角色陈述，无法确定关键未知。')
         request = dict(model=self.settings.model, messages=[{'role':'system','content':system},
             {'role':'user','content':'USER_CONTEXT\n' + canonical(context.body)}],
             max_tokens=self.profile['output_tokens'], enable_thinking=False, temperature=0.2,
@@ -323,11 +340,13 @@ class DashScopePort:
             raise RuntimeFault('model_context_limit')
         return request
 
-    async def complete(self, request):
+    async def complete(self, request, *, on_response=None):
         async with httpx.AsyncClient(timeout=min(self.settings.timeout, 60), transport=self.transport,
                                      follow_redirects=False, trust_env=False) as client:
             response = await client.post(self.settings.base_url + '/chat/completions', json=request,
                 headers={'Authorization':'Bearer ' + self.settings.api_key})
+            if on_response:
+                on_response()
             response.raise_for_status()
             if len(response.content) > 131072: raise RuntimeFault('model_response_limit')
             return response.json()
@@ -387,6 +406,10 @@ def proposal_intent(raw, context, epoch, attempt):
     if value.kind == 'action' and value.action_type == 'speak':
         if any(key not in context.body['knowledge'] for key in typed_args.share_ids):
             raise RuntimeFault('unauthorized_model_share')
+        expression = context.body.get('expression', {})
+        if ((typed_args.past_id is not None and typed_args.past_id not in expression.get('past', {}))
+            or (typed_args.basis_id is not None and typed_args.basis_id not in expression.get('basis', {}))):
+            raise RuntimeFault('unauthorized_model_source')
     return intent
 
 
@@ -398,7 +421,51 @@ class ModelPolicy:
         self.reservation = (port.profile['input_tokens']*port.profile['input_micro_per_token']
             + port.profile['output_tokens']*port.profile['output_micro_per_token'])
         self.activity = {}
-        if ledger.version==2: self.bind_approval()
+        self.explorations = set()
+        if ledger.version >= 2: self.bind_approval()
+
+    def _exploration_family(self, conn, state):
+        store = self.runtime._store
+        chain = []
+        while True:
+            ancestors = state.lineage.ancestors if state.lineage else []
+            path = [*(anchor.worldline_id for anchor in ancestors), state.worldline_id]
+            if any(identity in chain for identity in path):
+                raise RuntimeFault('invalid_exploration_lineage')
+            chain[:0] = path
+            manifest = store.scenario(path[0], conn=conn) or {}
+            origin = manifest.get('reopen', {}).get('worldline_id')
+            if not origin:
+                return chain
+            previous = store._read_at(conn, origin, 0)
+            if previous.world_id != state.world_id:
+                raise RuntimeFault('invalid_exploration_lineage')
+            state = previous
+
+    def exploration_for(self, state, *, conn=None):
+        if not self.explorations:
+            return None
+        if conn is None:
+            with self.runtime._store.connection() as read:
+                read.execute('BEGIN')
+                return self.exploration_for(state, conn=read)
+        return next((identity for identity in self._exploration_family(conn, state)
+                     if identity in self.explorations), None)
+
+    def allocation(self, state):
+        scope = self.exploration_for(state) if self.ledger.shared else state.worldline_id
+        return self.ledger.allocation(scope) if scope else None
+
+    def pause_at_exploration_limit(self, state, control):
+        if not self.ledger.shared:
+            return False
+        try:
+            self.ledger.check_exploration(self.exploration_for(state), self.reservation)
+        except RuntimeFault as error:
+            self.runtime._store.pause_with_reason(state.worldline_id, 'model:' + str(error),
+                                                  epoch=control['epoch'], seq=state.head_seq)
+            return True
+        return False
 
     def bind_approval(self):
         """One approval keeps its ledger identity across app restarts/worldlines."""
@@ -407,6 +474,22 @@ class ModelPolicy:
         binding={'id':self.ledger.approval_id,'path':str(self.ledger.path)}
         with self.runtime._store.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
+            if self.ledger.shared:
+                if not allocations:
+                    raise RuntimeFault('worldline_model_budget_required')
+                for line in allocations:
+                    state = self.runtime._store._state(conn, line)
+                    if any(ancestor in allocations for ancestor in self._exploration_family(conn, state)[:-1]):
+                        raise RuntimeFault('overlapping_explorations')
+                    row = conn.execute('SELECT ledger FROM runtime_v2_execution_control WHERE worldline_id=?', (line,)).fetchone()
+                    config = json.loads(row['ledger'])
+                    if config.get('model_approval', binding) != binding:
+                        raise RuntimeFault('approval_ledger_conflict')
+                    config['model_approval'] = binding
+                    conn.execute('UPDATE runtime_v2_execution_control SET ledger=? WHERE worldline_id=?', (canonical(config), line))
+                conn.commit()
+                self.explorations = allocations
+                return
             target=None
             for row in conn.execute('SELECT worldline_id,ledger FROM runtime_v2_execution_control').fetchall():
                 config=json.loads(row['ledger'])
@@ -423,6 +506,12 @@ class ModelPolicy:
 
     def reconcile(self):
         """Lost domain ACK never requires another model call or a second charge."""
+        if self.ledger.shared:
+            with self.ledger.connection() as conn:
+                pending = conn.execute("SELECT id,worldline,actor,seq,outcome FROM attempts WHERE outcome='submit_pending'").fetchall()
+            for attempt in pending:
+                self.reconcile_attempt(attempt)
+            return
         recovered = []
         with self.ledger.connection() as conn:
             rows = conn.execute('SELECT id,worldline,actor,outcome FROM attempts').fetchall()
@@ -441,6 +530,88 @@ class ModelPolicy:
             conn.commit()
         for attempt, outcome, kind in recovered: self.ledger.outcome(attempt,outcome,kind=kind)
 
+    def reconcile_attempt(self, attempt):
+        """Read the original commit and receipt from one Runtime snapshot."""
+        line, identity = attempt['worldline'], attempt['id']
+        subject = 'model-worker:' + attempt['actor']
+        try:
+            with self.runtime._store.connection() as conn:
+                conn.execute('PRAGMA query_only=ON')
+                conn.execute('BEGIN')
+                control = conn.execute('''SELECT c.status,w.head_seq FROM runtime_v2_execution_control c
+                                          JOIN runtime_v2_worldlines w ON w.id=c.worldline_id WHERE w.id=?''', (line,)).fetchone()
+                if not control or control['status'] != 'paused':
+                    return False
+                receipt = conn.execute('SELECT subject,payload FROM runtime_v2_receipts WHERE worldline_id=? AND request_id=?',
+                                       (line, identity)).fetchone()
+                journal = conn.execute('SELECT payload FROM runtime_v2_journal WHERE worldline_id=? AND seq=?',
+                                       (line, attempt['seq'] + 1)).fetchone()
+                if control['head_seq'] > attempt['seq'] and journal is None:
+                    return False
+                event = json.loads(journal['payload']) if journal else {}
+                matches = event.get('request_id') == identity and event.get('subject') == subject
+                if receipt and receipt['subject'] != subject:
+                    return False
+                saved = json.loads(receipt['payload']) if receipt else {}
+                committed = saved.get('status') in ('committed', 'rule_rejected')
+                if (committed != matches or committed and (
+                    saved['event_id'] != event['event_id'] or saved['seq'] != event['seq']
+                    or saved['intent_digest'] != event['intent_digest']
+                )):
+                    return False
+        except (sqlite3.Error, ValueError, KeyError):
+            return False
+        if attempt['outcome'] == 'submit_pending':
+            self.ledger.outcome(identity, saved.get('status', 'submit_absent'), kind=event.get('kind') if committed else None,
+                                seq=saved.get('seq') if committed else None, checked=True)
+        elif committed:
+            return False
+        else:
+            self.ledger.mark_checked(identity)
+        return True
+
+    def check_recovery(self, worldline):
+        if worldline in self.activity:
+            raise RuntimeFault('model_attempt_inflight')
+        attempt = self.ledger.latest(worldline)
+        if not attempt:
+            return
+        if attempt['status'] in ('reserved', 'running'):
+            raise RuntimeFault('model_attempt_inflight')
+        if not attempt['checked'] and not attempt['commit_seq'] and not self.reconcile_attempt(attempt):
+            raise RuntimeFault('model_commit_unknown')
+
+    def before_resume(self, state, control):
+        self.check_recovery(state.worldline_id)
+        config = json.loads(control['ledger'])
+        policy = config.get('autonomy', {})
+        if policy.get('mode') != 'model' or not policy.get('enabled'):
+            return
+        prior = self.ledger.latest(state.worldline_id, state.head_seq)
+        if prior:
+            actor = prior['actor']
+            allowed = config.get('run', {}).get('settings', {}).get('retry_once', False)
+            allowed = allowed and actor in policy['actors'] and (state.worldline_id, actor) not in self.excluded()
+            self.ledger.retry_origin(prior, actor, allowed)
+
+    def budget(self, state, control, exploration):
+        if exploration is None:
+            return None
+        budget = self.ledger.exploration_summary(exploration, state.worldline_id)
+        attempt = self.ledger.latest(state.worldline_id)
+        if attempt and attempt['outcome'] == 'submit_pending' and control['status'] != 'running':
+            budget['recovery'] = {'status': 'commit_unknown', 'step': attempt['seq'] + 1}
+        elif attempt and attempt['checked'] and attempt['commit_seq']:
+            budget['recovery'] = {'status': 'commit_recovered', 'step': attempt['commit_seq']}
+        elif (attempt and control['status'] != 'running' and not attempt['commit_seq'] and attempt['seq'] == state.head_seq
+              and attempt['status'] not in ('reserved', 'running', 'cancelled') and attempt['outcome'] != 'stale_discarded'):
+            config = json.loads(control['ledger'])
+            allowed = config.get('run', {}).get('settings', {}).get('retry_once', False)
+            allowed = allowed and attempt['actor'] in config.get('autonomy', {}).get('actors', [])
+            budget['recovery'] = {'status': 'not_committed' if attempt['checked'] else 'check_required',
+                                  'step': attempt['seq'] + 1, 'retry_approved': bool(attempt['allow_retry'] and allowed)}
+        return {'exploration': budget}
+
     def current(self, worldline):
         store = self.runtime._enabled()
         with store.connection() as conn:
@@ -453,20 +624,20 @@ class ModelPolicy:
         return (control['status'] == 'running' and control['epoch'] == epoch and state.head_seq == context.watermark
             and policy.get('mode') == 'model' and policy.get('enabled') and policy['used'] < policy['limit']
             and context.actor_id in policy['actors'] and (context.worldline_id, context.actor_id) not in self.excluded()
-            and (not state.social or state.social.agents[context.actor_id].next_tick <= state.sim_time_tick))
+            and bool(ready_actors(state, [context.actor_id])) and not ready_jobs(state))
 
     async def step(self, worldline, actor):
         state, control = self.current(worldline)
-        from .scenarios import profile
-        query = state.agents[actor].goal
-        if state.social:
-            own = state.social.agents[actor]
-            query += ' ' + ' '.join(p.next_step for p in own.plans if p.status == 'active')
-        context = build_context(state, actor, strategy='retrieval' if state.social else 'recent12', query=query,
-                                profile=profile(self.runtime._store, state, actor))
+        from .scenarios import model_context
+        context = model_context(state, actor, self.runtime._store.scenario(worldline))
         epoch, attempt = control['epoch'], 'model:' + uuid4().hex
         if not self.valid(context, epoch): return None
-        if state.state_schema_version == READING_STATE:
+        shared = self.ledger.shared
+        exploration = self.exploration_for(state)
+        allow_retry = json.loads(control['ledger']).get('run', {}).get('settings', {}).get('retry_once', False)
+        prior = self.ledger.latest(worldline, state.head_seq) if shared else None
+        retry = self.ledger.retry_origin(prior, actor, allow_retry) if shared else None
+        if state.state_schema_version == READING_STATE and not shared:
             recovery = self.ledger.cognition_recovery(context)
             if recovery and recovery['correction_used']:
                 self.runtime._store.pause_with_reason(worldline, 'model:empty_model_cognition_limit')
@@ -476,17 +647,29 @@ class ModelPolicy:
                 context.body['execution_feedback'] = dict(code='empty_model_cognition',
                     message='上一提案为空认知，未执行任何动作或认知修订，未推进逻辑时间。请自行重新选择。',
                     remaining_corrections=1)
+        if retry and prior['outcome'] == 'empty_model_cognition':
+            context.body['execution_feedback'] = dict(code='empty_model_cognition',
+                message='上一提案为空认知，未执行任何动作或认知修订，未推进逻辑时间。请自行重新选择。',
+                remaining_corrections=1)
         context, request = fit_request(context, self.port.request)
-        self.reconcile()
+        if not shared:
+            self.reconcile()
         self.ledger.reserve(attempt, context, epoch, dict(world_id=context.world_id,
-            prompt_version=READING_PROMPT_VERSION if state.state_schema_version == READING_STATE else COGNITIVE_PROMPT_VERSION if state.state_schema_version in COGNITIVE_STATES else SOCIAL_PROMPT_VERSION if state.social else PROMPT_VERSION, payload=request), self.reservation)
+            prompt_version=READING_PROMPT_VERSION if state.state_schema_version == READING_STATE else COGNITIVE_PROMPT_VERSION if state.state_schema_version in COGNITIVE_STATES else SOCIAL_PROMPT_VERSION if state.social else PROMPT_VERSION, payload=request),
+            self.reservation, exploration=exploration, allow_retry=allow_retry)
         self.activity[worldline] = {'state': 'requesting', 'actor_id': actor}
         started = time.monotonic()
-        allocation = self.ledger.allocation(worldline)
+        allocation = self.allocation(state)
         task, token = None, None
+        received = False
+        submitting = False
         try:
+            if shared and not self.valid(context, epoch):
+                self.ledger.finish(attempt, 'cancelled')
+                return None
             self.ledger.running(attempt)
-            task = asyncio.create_task(self.port.complete(request))
+            callbacks = {'on_response': lambda: self.ledger.dispatched(attempt, sent=True)} if shared else {}
+            task = asyncio.create_task(self.port.complete(request, **callbacks))
             while not task.done():
                 await asyncio.wait({task}, timeout=0.1)
                 expired = allocation and allocation['elapsed_seconds'] + time.monotonic() - started >= allocation['runtime_seconds']
@@ -497,6 +680,7 @@ class ModelPolicy:
                     if expired: self.runtime._store.pause_with_reason(worldline, 'model:runtime_limit')
                     return None
             result = await task
+            received = True
             usage = result.get('usage', {}) if isinstance(result, dict) else {}
             # HTTP diagnostics contain no headers, URL query, or API key.
             saved = json.dumps(result, ensure_ascii=False, allow_nan=False)
@@ -517,8 +701,12 @@ class ModelPolicy:
             if not self.valid(context, epoch):
                 self.ledger.outcome(attempt, 'stale_discarded'); return None
             token = self.runtime.grant_actor(worldline, actor, subject='model-worker:' + actor)
+            if shared:
+                self.ledger.outcome(attempt, 'submit_pending')
+                submitting = True
             receipt = self.runtime.submit(token, intent.model_dump(), worker=True)
-            self.ledger.outcome(attempt, receipt.status, kind=intent.kind)
+            outcome = 'stale_discarded' if shared and receipt.status in ('stale_state', 'epoch_invalid', 'paused') else receipt.status
+            self.ledger.outcome(attempt, outcome, kind=intent.kind, seq=receipt.seq)
             if receipt.status not in ('committed', 'rule_rejected', 'stale_state', 'epoch_invalid', 'paused'):
                 self.runtime._store.pause_with_reason(worldline, receipt.status)
             return receipt
@@ -527,24 +715,53 @@ class ModelPolicy:
                 task.cancel(); await asyncio.gather(task, return_exceptions=True)
             self.ledger.finish(attempt, 'cancelled')
             raise
-        except (httpx.HTTPError, RuntimeFault, ValidationError, ValueError, TypeError) as exc:
+        except (httpx.HTTPError, RuntimeFault, ValidationError, ValueError, TypeError, OSError, sqlite3.Error) as exc:
             code = str(exc) if isinstance(exc, RuntimeFault) else type(exc).__name__
+            if shared and submitting:
+                self.runtime._store.pause_with_reason(worldline, 'model:commit_unknown', epoch=epoch)
+                return None
+            if shared:
+                if isinstance(exc, (httpx.ReadError, httpx.ReadTimeout, httpx.RemoteProtocolError)):
+                    self.ledger.dispatched(attempt, sent=True)
+                    code = 'model_connection_lost'
+                elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+                    self.ledger.dispatched(attempt, sent=False)
+                    code = 'model_not_sent'
             self.ledger.finish(attempt, 'failed')
             self.ledger.outcome(attempt, code)
-            if code == 'empty_model_cognition' and self.valid(context, epoch):
+            if shared and received and allow_retry and not retry and self.valid(context, epoch):
+                self.ledger.mark_checked(attempt)
+                return None
+            if not shared and code == 'empty_model_cognition' and self.valid(context, epoch):
                 recovery = self.ledger.cognition_recovery(context)
                 if recovery and not recovery['correction_used']: return None
                 code = 'empty_model_cognition_limit'
-            self.runtime._store.pause_with_reason(worldline, 'model:' + code)
+            self.runtime._store.pause_with_reason(worldline, 'model:' + code, epoch=epoch, seq=context.watermark)
             return None
         finally:
             self.activity.pop(worldline, None)
-            _, current_control = self.current(worldline)
-            current_policy=json.loads(current_control['ledger']).get('autonomy',{})
-            self.ledger.set_active(worldline,bool(current_control['status']=='running' and current_policy.get('enabled') and current_policy.get('mode')=='model'))
             if token: self.runtime.revoke(token)
+            if shared:
+                self.sync_explorations()
+            else:
+                _, current_control = self.current(worldline)
+                current_policy=json.loads(current_control['ledger']).get('autonomy',{})
+                self.ledger.set_active(worldline,bool(current_control['status']=='running' and current_policy.get('enabled') and current_policy.get('mode')=='model'))
+
+    def sync_explorations(self):
+        active = set()
+        with self.runtime._store.connection() as conn:
+            conn.execute('BEGIN')
+            for row in conn.execute("SELECT worldline_id,ledger FROM runtime_v2_execution_control WHERE status='running'"):
+                policy = json.loads(row['ledger']).get('autonomy', {})
+                if policy.get('enabled') and policy.get('mode') == 'model':
+                    active.add(self.exploration_for(self.runtime._store._state(conn, row['worldline_id']), conn=conn))
+        for exploration in self.explorations:
+            self.ledger.set_active(exploration, exploration in active)
 
     async def cycle(self):
+        if self.ledger.shared:
+            self.sync_explorations()
         if self.ledger.version == 2:
             with self.ledger.connection() as conn: allocated=[r[0] for r in conn.execute('SELECT worldline FROM allocations')]
             for line in allocated:
@@ -561,22 +778,23 @@ class ModelPolicy:
             state, control = self.current(line)
             policy = json.loads(control['ledger']).get('autonomy', {})
             if state.state_schema_version not in INTERACTIVE_STATES or not policy.get('enabled') or policy.get('mode') != 'model': continue
-            if any(job.due_tick <= state.sim_time_tick for job in state.scheduler.pending_jobs): continue
+            if ready_jobs(state): continue
             if policy['used'] >= policy['limit']:
                 self.runtime._store.pause_with_reason(line, 'autonomy_budget_exhausted'); continue
             actors = [a for a in state.scheduler.ready_actor_order if a in policy['actors'] and (line,a) not in self.excluded()]
-            if not actors: continue
-            if state.social:
-                from .social import available_actors
-                ready = available_actors(state, actors)
-                if not ready: continue  # RuntimeWorker advances a committed wait, without a model call.
-                actor = ready[0]
-            else: actor = actors[state.scheduler.turn_counter % len(actors)]
+            ready = ready_actors(state, actors)
+            if not ready:
+                self.pause_at_exploration_limit(state, control)
+                continue  # RuntimeWorker handles known changes without a model call.
+            actor = ready[0] if state.social else ready[state.scheduler.turn_counter % len(ready)]
             try: await self.step(line, actor)
             except (RuntimeFault, ValidationError, ValueError) as exc:
                 code = str(exc) if isinstance(exc, RuntimeFault) else type(exc).__name__
-                self.runtime._store.pause_with_reason(line, 'model:' + code)
-                self.ledger.set_active(line,False)
+                self.runtime._store.pause_with_reason(line, 'model:' + code, epoch=control['epoch'], seq=state.head_seq)
+                if self.ledger.shared:
+                    self.sync_explorations()
+                else:
+                    self.ledger.set_active(line,False)
 
 
 def configured_policy(runtime, settings, excluded):

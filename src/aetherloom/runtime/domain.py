@@ -2,12 +2,14 @@
 import hashlib
 import json
 
-from .contracts import (RuntimeAggregate as Aggregate, Evidence, Memory, EventSource, ActionIntent as Intent, TransitionPlan as Plan,
+from .contracts import (RuntimeAggregate as Aggregate, Evidence, Memory, PerceivedMemory, EventSource, ActionIntent as Intent, TransitionPlan as Plan,
                         LocationSet, HolderSet, GoalSet, KnowledgeSet, MemoryAppend, CounterSet,
                         STATE, ENGINE, RULES, CONTRACT, EVENT, HASH, SCHEDULER,
                         INTERACTIVE_STATE, INTERACTIVE_EVENT, INTERACTIVE_SCHEDULER, ScheduledJob,
                         FORK_STATE, FORK_EVENT, INTERACTIVE_STATES, FORK_STATES, FORK_CORE_STATE, FORK_CORE_EVENT,
                         SOCIAL_STATE, SOCIAL_EVENT, SOCIAL_STATES, COGNITIVE_STATE, COGNITIVE_EVENT, READING_STATE, READING_EVENT)
+from .perception import bystander_evidence, hears_words
+from .premises import speech_effects, validate_scope
 
 
 class RuntimeFault(ValueError):
@@ -75,12 +77,29 @@ def invariants(state):
         raise RuntimeFault('invalid_aggregate')
     if any(a.location not in places for a in agents.values()):
         raise RuntimeFault('invalid_agent_location')
+    candidates = state.candidates or {}
+    if candidates and (state.state_schema_version not in (INTERACTIVE_STATE, FORK_STATE) or len(candidates) > 6
+                       or any(a.location not in places or a.memories for a in candidates.values())
+                       or set(candidates) & (set(places) | set(state.world.items))):
+        raise RuntimeFault('invalid_scene_candidates')
     if any(holder not in agents and holder not in places for holder in state.world.items.values()):
         raise RuntimeFault('invalid_item_holder')
     if any(set(neighbors) - set(places) for neighbors in places.values()):
         raise RuntimeFault('invalid_topology')
     if any(r.destination_id not in places or r.item_id not in state.world.items for r in state.world.access_rules):
         raise RuntimeFault('invalid_access_rule')
+    layout = state.world.perception
+    if layout is not None:
+        pairs = {(link.observer, link.source) for link in layout.links}
+        areas = set(places) | set(layout.zones)
+        if (state.state_schema_version not in INTERACTIVE_STATES
+            or set(layout.zones) & set(places) or any(not key.strip() or len(key) > 120 for key in layout.zones)
+            or not set(layout.zones.values()) <= set(places)
+            or not set(layout.positions) <= set(agents) or not set(layout.positions.values()) <= set(layout.zones)
+            or len(pairs) != len(layout.links)
+            or any(observer == source or not {observer, source} <= areas for observer, source in pairs)
+            or any(not (link.sight or link.sound) for link in layout.links)):
+            raise RuntimeFault('invalid_perception_layout')
     jobs = state.scheduler.pending_jobs
     if state.state_schema_version in INTERACTIVE_STATES:
         from .interactive import validate_job
@@ -101,11 +120,28 @@ def invariants(state):
                 raise RuntimeFault('invalid_event_source')
         elif source.worldline_id != state.worldline_id or not 1 <= source.seq <= state.head_seq:
             raise RuntimeFault('invalid_event_source')
-    for agent in agents.values():
+    if state.premises and state.state_schema_version not in (INTERACTIVE_STATE, FORK_STATE):
+        raise RuntimeFault('invalid_story_premises')
+    validate_scope(state, check_source)
+    if state.pending_conflict:
+        if state.state_schema_version not in INTERACTIVE_STATES:
+            raise RuntimeFault('invalid_pending_conflict')
+        check_source(state.pending_conflict.source)
+        detail = state.pending_conflict.detail
+        if detail.kind == 'item':
+            people = [claim.actor_id for claim in detail.claims]
+            eligible = [claim.actor_id for claim in detail.claims if claim.blocker is None]
+            if (len(set(people)) != len(people) or not set(people) <= set(agents)
+                or len(eligible) < 2 or state.world.items.get(detail.item_id) != detail.holder_id
+                or any(agents[actor].location != detail.holder_id for actor in eligible)):
+                raise RuntimeFault('invalid_pending_conflict')
+    for agent in (*agents.values(), *candidates.values()):
         for memory in agent.memories:
             check_source(memory.source)
             if memory.actor_id not in agents and not (state.state_schema_version in INTERACTIVE_STATES and memory.actor_id is None):
                 raise RuntimeFault('invalid_memory_actor')
+            if isinstance(memory, PerceivedMemory) and layout is None:
+                raise RuntimeFault('invalid_perception_evidence')
         for knowledge in agent.known.values():
             if knowledge.basis in ('read','checked') and state.state_schema_version != READING_STATE:
                 raise RuntimeFault('invalid_reading_schema')
@@ -172,10 +208,16 @@ def resolve(state: Aggregate, intent: Intent) -> Plan:
         elif args.recipient_id is not None and (args.recipient_id == actor or args.recipient_id not in state.agents
                 or state.agents[args.recipient_id].location != me.location):
             reason = 'recipient_not_colocated'
+        elif args.recipient_id is not None and not hears_words(state, args.recipient_id, actor):
+            reason = 'recipient_cannot_hear_words'
         elif any(key not in me.known for key in args.share_ids):
             reason = 'unknown_report'
         else:
-            recipients += [args.recipient_id] if args.recipient_id else sorted(a for a,s in state.agents.items() if a != actor and s.location == me.location)
+            if args.past_id is not None or args.basis_id is not None:
+                additions, reason = speech_effects(state, actor, args)
+                effects.extend(additions)
+            recipients += [args.recipient_id] if args.recipient_id else sorted(
+                other for other in state.agents if other != actor and hears_words(state, other, actor))
             for recipient in recipients[1:]:
                 for key in dict.fromkeys(args.share_ids):
                     if key not in state.agents[recipient].known:
@@ -185,11 +227,14 @@ def resolve(state: Aggregate, intent: Intent) -> Plan:
         pass  # Observation supplies perception; it does not grant global knowledge.
     if reason:
         effects, recipients = [], [actor]
+    source = EventSource(worldline_id=state.worldline_id, seq=state.head_seq+1)
     for recipient in recipients:
         text = 'rule_rejected' if reason else args.speech if kind == 'speak' else kind
         effects.append(MemoryAppend(entity_id=recipient, before_length=len(state.agents[recipient].memories),
-            evidence=Memory(source=EventSource(worldline_id=state.worldline_id, seq=state.head_seq+1), actor_id=actor, action_type=kind,
+            evidence=Memory(source=source, actor_id=actor, action_type=kind,
                 basis='own_action' if recipient == actor else 'reported' if kind == 'speak' else 'observed', text=text)))
+    if not reason:
+        effects.extend(bystander_evidence(state, actor, kind, args, recipients, source))
     effects += [CounterSet(op='clock_advance', before=state.sim_time_tick, after=state.sim_time_tick+1),
                 CounterSet(op='scheduler_turn_advance', before=state.scheduler.turn_counter, after=state.scheduler.turn_counter+1),
                 CounterSet(op='sequence_advance', before=state.head_seq, after=state.head_seq+1)]

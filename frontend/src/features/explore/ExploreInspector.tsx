@@ -5,9 +5,11 @@ import { Button, ErrorNotice } from '../../components/ui';
 import { EntityMark } from '../../components/EntityMark';
 import { Portrait } from '../objects/Portrait';
 import { entityKinds } from '../creation/api';
+import { EventNarrativeButton } from '../creation/Narrative';
 import { runtimeCanonSources } from '../runtime/reviewAccess';
 import { exploreApi, familyNames, period, recordMapFocus, type Detail, type ExploreGraph, type SourceLink } from './api';
 import { groupEdges, type Selection } from './graphModel';
+import { periodCardPath, type StoryMoment } from '../periods/api';
 
 const statusNames: Record<string, string> = { active: '收录中', withdrawn: '已撤回', superseded: '已替代', deleted: '已删除' };
 type FollowLink = (event: MouseEvent<HTMLAnchorElement>, destination: string) => void;
@@ -53,15 +55,17 @@ function Sources({ world, kind, id, values, onOpen }: {
   </>;
 }
 
-export function ExploreInspector({ world, graph, selection, portraits, onSelect, onFocus, onReference = onFocus, onTime, onMap, focusNode, timeline, connectionsVisible, view, onViewChange, onFollowLink }: {
+export function ExploreInspector({ world, graph, selection, portraits, onSelect, onFocus, onReference = onFocus, onTime, onMap, focusNode, timeline, overview, connectionsVisible, view, onViewChange, onFollowLink, moment }: {
   world: string; graph?: ExploreGraph; selection?: Selection; portraits: Record<string, number>;
   onSelect: (selection: Selection) => void; onFocus: (key: string) => void;
   onReference?: (key: string) => void;
   onTime?: (kind: string, id: string) => void; focusNode?: import('./api').ExploreNode | null;
   onMap?: (location: string, record: string) => void;
   timeline?: boolean;
+  overview?: boolean;
   connectionsVisible: boolean;
   view: InspectorView; onViewChange: (view: InspectorView) => void; onFollowLink: FollowLink;
+  moment?: StoryMoment;
 }) {
   const groups = graph ? groupEdges(graph) : [];
   const node = selection?.type === 'node' ? graph?.nodes.find(n => n.key === selection.key) || (focusNode?.key === selection.key ? focusNode : undefined) : undefined;
@@ -87,20 +91,26 @@ export function ExploreInspector({ world, graph, selection, portraits, onSelect,
   }
   const direct = selection?.type === 'record' ? { kind: selection.key.split(':')[0], id: selection.key.slice(selection.key.indexOf(':') + 1) } : undefined;
   const chosen = override?.anchor === selection?.key ? override : direct || (group ? { kind: group.records[0].record_type, id: group.records[0].record_id } : node ? { kind: node.type, id: node.id } : undefined);
-  const requested = chosen ? `${chosen.kind}:${chosen.id}` : '';
+  const recordKey = chosen ? `${chosen.kind}:${chosen.id}` : '';
+  const requested = recordKey && `${recordKey}:${JSON.stringify(moment || null)}`;
   const [loaded, setLoaded] = useState<{ key: string; detail: Detail }>(), [error, setError] = useState(''), [retry, setRetry] = useState(0);
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     if (!chosen) return;
     let active = true;
     setLoading(true); setError('');
-    exploreApi.detail(world, chosen.kind, chosen.id).then(detail => { if (active) setLoaded({ key: requested, detail }); })
+    exploreApi.detail(world, chosen.kind, chosen.id, moment).then(detail => { if (active) setLoaded({ key: requested, detail }); })
       .catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [world, requested, retry]);
   const detail = loaded?.detail, stale = loaded?.key !== requested;
+  const editRelation = detail?.kind === 'relationship' && detail.record.status === 'active'
+    ? `/worlds/${world}/create/records?tab=relations&relationship=${encodeURIComponent(detail.id)}` : undefined;
   const relatedEvents = detail?.kind === 'relationship' ? detail.references.filter(ref => ref.kind === 'event') : [];
   const references = detail?.kind === 'relationship' ? detail.references.filter(ref => ref.kind !== 'event') : detail?.references ?? [];
+  const location = timeline && detail?.kind === 'event' && detail.record.status === 'active' && detail.record.location_id;
+  const beforeAfter = location && detail ? periodCardPath(world, location, { event: detail.id, side: 'after' }) : undefined;
+  const fullCard = node?.type === 'entity' && moment ? periodCardPath(world, node.id, moment) : node?.to;
   const mapFocus = onMap && detail && (detail.kind === 'entity'
     ? detail.record.kind === 'location' && detail.record.status === 'active' ? `entity:${detail.id}` : undefined
     : recordMapFocus({ kind: detail.kind, location_id: detail.record.location_id }, detail.references.filter(ref => ref.active), graph?.focus));
@@ -130,10 +140,13 @@ export function ExploreInspector({ world, graph, selection, portraits, onSelect,
         {!identity && <span className="entity-mark">{detail.kind === 'event' ? <ScrollText size={25}/> : <Link2 size={25}/>}</span>}
         <div><small>{identity ? identity.type === 'event' ? '正式事件' : entityKinds[identity.kind] || identity.kind : group ? familyNames[group.family] : ({ event: '正式事件', relationship: '正式关系', assertion: '正式事实' } as Record<string,string>)[detail.kind] || '正式记录'}</small><h2>{detail.title}</h2><span>{statusNames[detail.record.status] || detail.record.status} · v{detail.record.version}</span></div>
       </header>
-      {node && <div className="explore-identity-actions"><Button onClick={() => onFocus(node.key)}><Crosshair size={14}/>设为焦点</Button><Link className="text-link" to={node.to} onClick={event => onFollowLink(event, node.to)}>完整资料 <ArrowUpRight size={14}/></Link></div>}
-      {(onTime || mapFocus || setupRoute) && <div className="explore-identity-actions">
+      {node && fullCard && <div className="explore-identity-actions">{node.key !== graph?.focus && <Button onClick={() => onFocus(node.key)}><Crosshair size={14}/>{overview ? '查看局部邻域' : '设为焦点'}</Button>}<Link className="text-link" to={fullCard} onClick={event => onFollowLink(event, fullCard)}>完整资料 <ArrowUpRight size={14}/></Link></div>}
+      {(detail.kind === 'event' || onTime || mapFocus || setupRoute || editRelation || beforeAfter) && <div className="explore-identity-actions">
+        {detail.kind === 'event' && <EventNarrativeButton key={detail.id} world={world} identity={detail.id} onOpen={onFollowLink} />}
+        {beforeAfter && <Link className="text-link" to={beforeAfter} onClick={event => onFollowLink(event, beforeAfter)}>查看事件前后 <ArrowUpRight size={14}/></Link>}
+        {editRelation && <Link className="text-link" to={editRelation} onClick={event => onFollowLink(event, editRelation)}>编辑关系 <ArrowUpRight size={14}/></Link>}
         {onTime && <Button onClick={() => onTime(chosen.kind, chosen.id)}><History size={14}/>在时间轴查看</Button>}
-        {onMap && mapFocus && <Button onClick={() => onMap(mapFocus, requested)}><MapIcon size={14}/>在地图查看</Button>}
+        {onMap && mapFocus && <Button onClick={() => onMap(mapFocus, recordKey)}><MapIcon size={14}/>在地图查看</Button>}
         {setupRoute && <Link className="text-link" to={setupRoute} onClick={event => onFollowLink(event, setupRoute)}><Orbit size={14}/>准备模拟</Link>}
       </div>}
       <div className="explore-detail-tabs" role="tablist" aria-label="探索详情页签">{([['overview', '资料'], ['sources', '依据'], ['history', '修改历史']] as const).map(([value, label], index) => <button type="button" role="tab" key={value} aria-selected={tab === value} aria-controls="explore-detail-body" id={`explore-tab-${value}`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)} onKeyDown={e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) { e.preventDefault(); const values = ['overview', 'sources', 'history'] as const; const next = e.key === 'Home' ? 0 : e.key === 'End' ? 2 : (index + (e.key === 'ArrowRight' ? 1 : 2)) % 3; setTab(values[next]); document.getElementById(`explore-tab-${values[next]}`)?.focus(); } }}>{label}</button>)}</div>

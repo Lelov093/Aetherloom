@@ -4,7 +4,8 @@ from uuid import uuid4
 from . import canon
 from .object_schema import schema, predicate_key
 
-TABLES = {'assertion':'assertions','event':'canon_events','relationship':'relationship_states','entity':'entities'}
+TABLES = {'assertion':'assertions','event':'canon_events','relationship':'relationship_states','entity':'entities',
+          'setting_state':'entity_period_values'}
 
 def dump(value):
     return json.dumps(value,ensure_ascii=False,separators=(',',':'))
@@ -165,6 +166,9 @@ class CanonManagementMixin:
                 conn.execute('UPDATE review_candidates SET payload=?,version=version+1,edited=1 WHERE id=?',(dump(payload),identity))
             conn.execute("INSERT OR IGNORE INTO canon_sources SELECT object_type,?,candidate_id FROM canon_sources WHERE object_type='entity' AND object_id=?",(target['id'],source_id))
             conn.execute("UPDATE material_sources SET object_id=?,version=version+1 WHERE object_type='entity' AND object_id=? AND status='active'", (target['id'], source_id))
+            conn.execute('''INSERT OR IGNORE INTO world_category_members(category_id, entity_id)
+                SELECT category_id, ? FROM world_category_members WHERE entity_id=?''', (target['id'], source_id))
+            conn.execute('DELETE FROM world_category_members WHERE entity_id=?', (source_id,))
             aliases=list(dict.fromkeys([*target['aliases'],source['name'],*source['aliases']]))
             core={**source['core'],**{k:v for k,v in target['core'].items() if v}}
             sections=[*target['sections'],*source['sections']]
@@ -217,6 +221,10 @@ class CanonManagementMixin:
         if kind == 'relationship':
             pair = self.required(conn,'temporal_relationships',item['relationship_id'])
             item.update(world_id=pair['world_id'],subject_id=pair['subject_id'],object_id=pair['object_id'])
+        if kind in ('relationship', 'assertion'):
+            anchors = conn.execute('SELECT from_event_id,to_event_id FROM canon_record_periods WHERE kind=? AND record_id=?',(kind,identity)).fetchone()
+            if anchors:
+                item.update(dict(anchors))
         item['sources'] = [r[0] for r in conn.execute('SELECT candidate_id FROM canon_sources WHERE object_type=? AND object_id=?',(kind,identity))]
         return item
 
@@ -238,19 +246,27 @@ class CanonManagementMixin:
                 versions.insert(0,{'version':current['version'],'payload':current,'saved_at':current.get('created_at') if current['version']==1 else None})
             return versions
 
-    def normalize_fact(self,conn,entity,data):
+    def normalize_fact(self, conn, entity, data, *, new_object=None):
         fields = schema(conn,entity['world_id'])['fields']
         definition = next((f for f in fields if f['key']==data.get('field_id')),None)
         if data.get('field_id') and not definition:
             fail('扩展字段不存在。',400)
         result = dict(data)
+        if definition and definition['kinds'] and entity['kind'] not in definition['kinds']:
+            fail('字段不适用于当前对象类型。',400)
+        if new_object:
+            if definition and definition['value_type'] != 'entity':
+                fail('请在对象引用或自由事实中创建关联卡片。',400)
+            # The pending card and its reference share the manual fact transaction.
+            target = self.insert_entity(conn, entity['world_id'], new_object)
+            result['object_id'] = target['id']
+            if definition:
+                result['typed_value'] = target['id']
         if not definition:
             if not result.get('value'):
                 fail('请输入事实内容。',400)
             result.update(value_type='text',typed_value=result['value'])
         else:
-            if definition['kinds'] and entity['kind'] not in definition['kinds']:
-                fail('字段不适用于当前对象类型。',400)
             value,kind = result.get('typed_value'),definition['value_type']
             valid = {'text':isinstance(value,str) and bool(value.strip()),
                      'number':type(value) in (int,float), 'boolean':type(value) is bool,
@@ -277,7 +293,8 @@ class CanonManagementMixin:
             self.expected(old,data['version'])
             if old['status'] != 'active':
                 fail('请先恢复已撤回事实；已替代事实请新增修订。')
-            value = self.normalize_fact(conn,entity,data)
+            new_object = data.pop('new_object', None)
+            value = self.normalize_fact(conn, entity, data, new_object=new_object)
             self.save_snapshot(conn,'assertion',identity)
             conn.execute('UPDATE assertions SET predicate=?,value=?,object_id=?,valid_from=?,valid_until=?,source_note=?,field_id=?,value_type=?,typed_value=?,version=version+1 WHERE id=?',
                          (*[value.get(k) for k in ('predicate','value','object_id','valid_from','valid_until','source_note','field_id','value_type')],dump(value['typed_value']),identity))
@@ -354,31 +371,36 @@ class CanonManagementMixin:
         with self.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
             self.writable_world(conn,world)
-            subject_entity = self.canonical_entity(conn,data['subject_id'],world,True)
-            target_entity = self.canonical_entity(conn,data['object_id'],world,True)
-            subject, target = subject_entity['id'], target_entity['id']
-            if subject==target: fail('关系两端必须不同。',400)
-            map_connection = data.get('map_connection')
-            if map_connection and (subject_entity['kind'] != 'location' or target_entity['kind'] != 'location'):
-                fail('只有两个地点之间的关系可以标记为地图连通。',400)
-            if identity:
-                old = self.object_snapshot(conn,'relationship',identity)
-                if old['world_id']!=world: fail('关系不属于当前世界。',400)
-                self.expected(old,data['version'])
-                if old['status']!='active': fail('请先恢复关系状态。')
-                if (subject,target)!=(old['subject_id'],old['object_id']):
-                    fail('稳定关系的两端不能改写，请创建另一关系。',400)
-                if map_connection is None:
-                    map_connection = old['map_connection']
-                self.save_snapshot(conn,'relationship',identity)
-                conn.execute('UPDATE relationship_states SET label=?,description=?,valid_from=?,valid_until=?,strength=?,source_note=?,map_connection=?,version=version+1 WHERE id=?',
-                             (data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note'],map_connection,identity))
-            else:
-                pair = conn.execute('SELECT id FROM temporal_relationships WHERE world_id=? AND subject_id=? AND object_id=?',(world,subject,target)).fetchone()
-                pair_id = pair['id'] if pair else str(uuid4())
-                if not pair: conn.execute('INSERT INTO temporal_relationships(id,world_id,subject_id,object_id) VALUES(?,?,?,?)',(pair_id,world,subject,target))
-                identity = str(uuid4())
-                conn.execute('INSERT INTO relationship_states(id,relationship_id,label,description,valid_from,valid_until,strength,source_note,map_connection) VALUES(?,?,?,?,?,?,?,?,?)',
-                             (identity,pair_id,data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note'],bool(map_connection)))
-            canon.changed(conn,world,'relationship',identity,{**data, 'map_connection': bool(map_connection)})
-            return self.save_snapshot(conn,'relationship',identity)
+            return self.save_relationship(conn,world,data,identity)
+
+    def save_relationship(self,conn,world,data,identity=None,*,from_event=None):
+        subject_entity = self.canonical_entity(conn,data['subject_id'],world,True)
+        target_entity = self.canonical_entity(conn,data['object_id'],world,True)
+        subject, target = subject_entity['id'], target_entity['id']
+        if subject==target: fail('关系两端必须不同。',400)
+        map_connection = data.get('map_connection')
+        if map_connection and (subject_entity['kind'] != 'location' or target_entity['kind'] != 'location'):
+            fail('只有两个地点之间的关系可以标记为地图连通。',400)
+        if identity:
+            old = self.object_snapshot(conn,'relationship',identity)
+            if old['world_id']!=world: fail('关系不属于当前世界。',400)
+            self.expected(old,data['version'])
+            if old['status']!='active': fail('请先恢复关系状态。')
+            if (subject,target)!=(old['subject_id'],old['object_id']):
+                fail('稳定关系的两端不能改写，请创建另一关系。',400)
+            if map_connection is None:
+                map_connection = old['map_connection']
+            self.save_snapshot(conn,'relationship',identity)
+            conn.execute('UPDATE relationship_states SET label=?,description=?,valid_from=?,valid_until=?,strength=?,source_note=?,map_connection=?,version=version+1 WHERE id=?',
+                         (data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note'],map_connection,identity))
+        else:
+            pair = conn.execute('SELECT id FROM temporal_relationships WHERE world_id=? AND subject_id=? AND object_id=?',(world,subject,target)).fetchone()
+            pair_id = pair['id'] if pair else str(uuid4())
+            if not pair: conn.execute('INSERT INTO temporal_relationships(id,world_id,subject_id,object_id) VALUES(?,?,?,?)',(pair_id,world,subject,target))
+            identity = str(uuid4())
+            conn.execute('INSERT INTO relationship_states(id,relationship_id,label,description,valid_from,valid_until,strength,source_note,map_connection) VALUES(?,?,?,?,?,?,?,?,?)',
+                         (identity,pair_id,data['label'],data['description'],data['valid_from'],data['valid_until'],data['strength'],data['source_note'],bool(map_connection)))
+            if from_event:
+                conn.execute("INSERT INTO canon_record_periods(kind,record_id,from_event_id) VALUES('relationship',?,?)", (identity,from_event))
+        canon.changed(conn,world,'relationship',identity,{**data, 'map_connection': bool(map_connection)})
+        return self.save_snapshot(conn,'relationship',identity)

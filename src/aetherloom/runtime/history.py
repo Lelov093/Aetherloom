@@ -2,7 +2,7 @@
 import json
 from uuid import uuid4
 
-from .contracts import RuntimeAggregate, Lineage, AncestorAnchor, FORK_STATE, FORK_EVENT, INTERACTIVE_STATES, FORK_CORE_STATE, FORK_CORE_EVENT
+from .contracts import RuntimeAggregate, Lineage, AncestorAnchor, FORK_STATE, FORK_EVENT, INTERACTIVE_STATES, FORK_CORE_STATE, FORK_CORE_EVENT, RunSettings
 from .domain import RuntimeFault, canonical, state_hash, invariants
 
 CHECKPOINT_INTERVAL = 32
@@ -62,6 +62,11 @@ def child_state(parent, child, zero, scheduled):
     for agent in raw['agents'].values():
         for item in list(agent['known'].values()) + agent['memories']:
             if item['source']['kind'] == 'event': item['source']['kind'] = 'inherited_event'
+    for premise in (raw.get('premises') or {}).get('resolved', {}).values():
+        if premise['source']['kind'] == 'event':
+            premise['source']['kind'] = 'inherited_event'
+    if raw.get('pending_conflict') and raw['pending_conflict']['source']['kind'] == 'event':
+        raw['pending_conflict']['source']['kind'] = 'inherited_event'
     return RuntimeAggregate.model_validate(raw)
 
 
@@ -86,6 +91,15 @@ def fork(store, parent_id, world, body, *, hook=lambda stage: None):
         save_checkpoint(store, conn, parent)
         hook('checkpoint_saved')
         store.create(child, baseline=baseline, connection=conn)
+        controls = conn.execute('SELECT worldline_id,ledger FROM runtime_v2_execution_control WHERE worldline_id IN (?,?)',
+                                (parent_id, child.worldline_id)).fetchall()
+        controls = {row['worldline_id']: json.loads(row['ledger']) for row in controls}
+        stop_tick = controls[parent_id].get('run', {}).get('settings', {}).get('story_stop_tick')
+        if stop_tick is not None:
+            child_control = controls[child.worldline_id]
+            child_control['run'] = {'settings': RunSettings(story_stop_tick=stop_tick).model_dump(), 'used': 0}
+            conn.execute('UPDATE runtime_v2_execution_control SET ledger=? WHERE worldline_id=?',
+                         (canonical(child_control), child.worldline_id))
         hook('child_saved')
         manifest = store.scenario(parent_id, conn=conn)
         if manifest:

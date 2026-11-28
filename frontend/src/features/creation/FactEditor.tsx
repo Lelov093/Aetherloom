@@ -1,223 +1,207 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Button, Dialog, ErrorNotice } from "../../components/ui";
 import { EntityChoice } from "../objects/EntityChoice";
 import {
-  creationApi,
-  type Entity,
-  type Fact,
-  type ObjectSchema,
-  type FieldDefinition,
+  creationApi, entityDraftData, RequestError,
+  type Entity, type EntityDraft, type Fact, type FactWrite, type ObjectSchema, type FieldDefinition,
 } from "./api";
+import { SaveConflict } from "./SaveConflict";
+import { periodsApi, type PeriodEvent } from '../periods/api';
+import { EventSelect } from '../periods/PeriodViews';
 
-export function FactEditor({
-  world,
-  entity,
-  initial,
-  onClose,
-  onSubmit,
-}: {
+export function FactEditor({ world, entity, initial, transition = false, onClose, onSubmit }: {
   world: string;
   entity: Entity;
   initial?: Fact;
+  transition?: boolean;
   onClose: () => void;
-  onSubmit: (data: unknown) => Promise<void>;
+  onSubmit: (data: FactWrite, event?: string) => Promise<void>;
 }) {
-  const [schema, setSchema] = useState<ObjectSchema>(),
-    [field, setField] = useState(initial?.field_id || ""),
-    [predicate, setPredicate] = useState(initial?.predicate || ""),
-    [value, setValue] = useState(
-      initial?.typed_value != null
-        ? Array.isArray(initial.typed_value)
-          ? initial.typed_value.join("，")
-          : String(initial.typed_value)
-        : initial?.value || "",
-    ),
-    [from, setFrom] = useState(initial?.valid_from || ""),
-    [until, setUntil] = useState(initial?.valid_until || ""),
-    [note, setNote] = useState(initial?.source_note || "人工世界编辑"),
-    [object, setObject] = useState(initial?.object_id || ""),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [defining, setDefining] = useState(false);
+  const [schema, setSchema] = useState<ObjectSchema>();
+  const [field, setField] = useState(initial?.field_id || "");
+  const [predicate, setPredicate] = useState(initial?.predicate || "");
+  const [value, setValue] = useState(
+    initial?.typed_value == null ? initial?.value || ""
+      : Array.isArray(initial.typed_value) ? initial.typed_value.join("，") : String(initial.typed_value),
+  );
+  const [from, setFrom] = useState(transition ? '' : initial?.valid_from || "");
+  const [until, setUntil] = useState(transition ? '' : initial?.valid_until || "");
+  const [anchor, setAnchor] = useState('');
+  const [events, setEvents] = useState<PeriodEvent[]>([]);
+  const [note, setNote] = useState(initial?.source_note || "人工世界编辑");
+  const [object, setObject] = useState(initial?.object_id || "");
+  const [draftObject, setDraftObject] = useState<EntityDraft>();
+  const [expectedVersion, setExpectedVersion] = useState(initial?.version);
+  const [latest, setLatest] = useState<Fact>();
+  const [referenceLabels, setReferenceLabels] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [defining, setDefining] = useState(false);
+
   async function load() {
     try {
       setSchema(await creationApi.schema(world));
-    } catch (e) {
-      setError((e as Error).message);
+    } catch (error) {
+      setError((error as Error).message);
     }
   }
+  useEffect(() => { void load(); }, [world]);
   useEffect(() => {
-    void load();
-  }, [world]);
-  const definition = schema?.fields.find((f) => f.key === field),
-    type = definition?.value_type || "text";
-  return (
-    <Dialog
-      title={initial ? "明确修改世界事实" : "明确确认世界事实"}
-      onClose={onClose}
-      busy={busy}
-    >
-      <p className="dialog-intro">
-        确认会写入正式设定，旧版本及原文来源保留。故事时间未知可以留空。
-      </p>
-      {defining ? (
-        <FieldForm
-          onCancel={() => setDefining(false)}
-          onSubmit={async (data) => {
-            await creationApi.defineField(world, data);
-            await load();
-            setField(data.key);
-            setPredicate(data.label);
-            setValue("");
-            setDefining(false);
-          }}
-        />
-      ) : (
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            setBusy(true);
-            setError("");
-            try {
-              let typed: unknown = value;
-              if (type === "number") {
-                if (!value.trim() || !Number.isFinite(Number(value)))
-                  throw new Error("请输入有效数字。");
-                typed = Number(value);
-              }
-              if (type === "boolean") typed = value === "true";
-              if (type === "tags")
-                typed = value
-                  .split(/[，,]/)
-                  .map((v) => v.trim())
-                  .filter(Boolean);
-              await onSubmit({
-                predicate,
-                value,
-                field_id: field || null,
-                typed_value: field ? typed : null,
-                object_id: type === "entity" ? value : object || null,
-                valid_from: from || null,
-                valid_until: until || null,
-                source_note: note,
-                ...(initial ? { version: initial.version } : {}),
-              });
-            } catch (e) {
-              setError((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <label className="field">
-            <span>字段</span>
-            <select
-              value={field}
-              onChange={(e) => {
-                const f = schema?.fields.find((f) => f.key === e.target.value);
-                setField(e.target.value);
-                setPredicate(f?.label || "");
-                setValue(f?.value_type === "boolean" ? "false" : "");
-                setObject("");
-              }}
-            >
-              <option value="">自由事实（文本）</option>
-              {schema?.fields
-                .filter((f) => !f.kinds.length || f.kinds.includes(entity.kind))
-                .map((f) => (
-                  <option key={f.key} value={f.key}>
-                    {f.label} · {typeNames[f.value_type]}
-                  </option>
-                ))}
-            </select>
-          </label>
-          {!field && (
-            <label className="field">
-              <span>属性 / 事实名称</span>
-              <input
-                value={predicate}
-                required
-                maxLength={160}
-                onChange={(e) => setPredicate(e.target.value)}
-              />
-            </label>
-          )}
-          {type === "entity" ? (
-            <EntityChoice
-              world={world}
-              label="事实引用对象"
-              value={value}
-              onChange={setValue}
-            />
-          ) : (
-            <label className="field">
-              <span>事实内容</span>
-              {type === "boolean" ? (
-                <select
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                >
-                  <option value="false">否</option>
-                  <option value="true">是</option>
-                </select>
-              ) : (
-                <input
-                  value={value}
-                  type={type === "number" ? "number" : "text"}
-                  step="any"
-                  required={type !== "tags"}
-                  placeholder={
-                    type === "tags" ? "以逗号分隔多个标签" : undefined
-                  }
-                  onChange={(e) => setValue(e.target.value)}
-                />
-              )}
-            </label>
-          )}
-          {!field && (
-            <EntityChoice
-              world={world}
-              label="引用对象（可选）"
-              value={object}
-              onChange={setObject}
-              optional
-            />
-          )}
-          {[
-            [from, setFrom, "生效故事时间"],
-            [until, setUntil, "失效故事时间"],
-            [note, setNote, "来源说明"],
-          ].map(([v, set, label]) => (
-            <label className="field" key={String(label)}>
-              <span>{String(label)}</span>
-              <input
-                value={v as string}
-                onChange={(e) =>
-                  (set as (value: string) => void)(e.target.value)
-                }
-              />
-            </label>
-          ))}
-          {error && <ErrorNotice>{error}</ErrorNotice>}
-          <div className="dialog-actions">
-            <Button
-              type="button"
-              disabled={busy}
-              onClick={() => setDefining(true)}
-            >
-              定义扩展字段
-            </Button>
-            <Button
-              variant="primary"
-              disabled={busy || !schema || (type === "entity" && !value)}
-            >
-              确认并保存事实
-            </Button>
-          </div>
-        </form>
-      )}
-    </Dialog>
-  );
+    if (!transition) return;
+    let active = true;
+    periodsApi.events(world).then(value => { if (active) setEvents(value); })
+      .catch(e => { if (active) setError(e.message); });
+    return () => { active = false; };
+  }, [world, transition]);
+
+  const definition = schema?.fields.find(item => item.key === field);
+  const type = definition?.value_type || "text";
+  const reference = type === "entity" ? value : object;
+  useEffect(() => {
+    if (!latest) return;
+    let active = true;
+    const ids = [...new Set([latest.object_id, reference].filter((id): id is string => Boolean(id)))];
+    void Promise.all(ids.map(async id => {
+      const target = await creationApi.entity(id).catch(() => undefined);
+      if (target?.world_id !== world) return [id, id];
+      const summary = Object.values(target.core).find(text => text.trim())
+        || target.sections.find(section => section.body.trim())?.body;
+      return [id, summary ? target.name + ' · ' + summary.trim().slice(0, 80) : target.name];
+    })).then(labels => { if (active) setReferenceLabels(Object.fromEntries(labels)); });
+    return () => { active = false; };
+  }, [world, latest, reference]);
+  const savedReference = latest?.object_id || "";
+  const savedLabel = referenceLabels[savedReference] || savedReference;
+  const draftLabel = draftObject ? draftObject.name + "（待创建）" : referenceLabels[reference] || reference;
+  const sameLabelDifferentObject = savedLabel === draftLabel && savedReference !== reference;
+
+  function choose(id: string) {
+    setDraftObject(undefined);
+    if (type === "entity") setValue(id);
+    else setObject(id);
+  }
+
+  function stage(draft: EntityDraft) {
+    choose("");
+    setDraftObject(draft);
+  }
+
+  function changeField(id: string) {
+    const selected = schema?.fields.find(item => item.key === id);
+    setField(id);
+    setPredicate(selected?.label || "");
+    setValue(selected?.value_type === "boolean" ? "false" : "");
+    setObject("");
+    setDraftObject(undefined);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (latest || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      let typed: Fact["typed_value"] = value;
+      if (type === "number") {
+        if (!value.trim() || !Number.isFinite(Number(value))) throw new Error("请输入有效数字。");
+        typed = Number(value);
+      } else if (type === "boolean") typed = value === "true";
+      else if (type === "tags") typed = value.split(/[，,]/).map(part => part.trim()).filter(Boolean);
+      await onSubmit({
+        predicate, value, field_id: field || null, typed_value: field && !draftObject ? typed : null,
+        object_id: reference || null, new_object: draftObject ? entityDraftData(draftObject) : undefined,
+        valid_from: from || null, valid_until: until || null, source_note: note, version: expectedVersion,
+      }, transition ? anchor : undefined);
+    } catch (error) {
+      setError((error as Error).message);
+      if (initial && error instanceof RequestError && error.status === 409) {
+        const owner = await creationApi.entity(entity.id).catch(() => undefined);
+        const saved = owner?.facts?.find(fact => fact.id === initial.id);
+        if (saved && saved.version !== expectedVersion) {
+          setLatest(saved);
+          setError("");
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <Dialog title={transition ? '记录事实的历史变化' : initial ? "明确修改世界事实" : "明确确认世界事实"}
+    onClose={onClose} busy={busy} className={defining ? "" : "fact-dialog"}>
+    {defining ? <FieldForm
+      onCancel={() => setDefining(false)}
+      onSubmit={async data => {
+        await creationApi.defineField(world, data);
+        await load();
+        setField(data.key);
+        setPredicate(data.label);
+        setValue(data.value_type === "boolean" ? "false" : "");
+        setObject("");
+        setDraftObject(undefined);
+        setDefining(false);
+      }}
+    /> : <form onSubmit={submit}>
+      <div className="fact-dialog-content">
+        <p className="dialog-intro">{transition ? '原事实在事件前有效，新事实从该事件后生效。' : '确认会写入正式设定，旧版本及原文来源保留。故事时间未知可以留空。'}</p>
+        {transition && <EventSelect events={events} value={anchor} onChange={setAnchor} disabled={busy}/>}
+        <label className="field">
+          <span>字段</span>
+          <select value={field} onChange={event => changeField(event.target.value)} disabled={busy || transition}>
+            <option value="">自由事实（文本）</option>
+            {schema?.fields.filter(item => !item.kinds.length || item.kinds.includes(entity.kind)).map(item =>
+              <option key={item.key} value={item.key}>{item.label} · {typeNames[item.value_type]}</option>)}
+          </select>
+        </label>
+        {!field && <label className="field">
+          <span>属性 / 事实名称</span>
+          <input value={predicate} required maxLength={160} disabled={busy || transition} onChange={event => setPredicate(event.target.value)} />
+        </label>}
+        {type === "entity" ? <EntityChoice world={world} label="事实引用对象" value={value} onChange={choose}
+          draft={draftObject} onStage={stage} disabled={busy} /> : <label className="field">
+          <span>事实内容</span>
+          {type === "boolean" ? <select value={value} disabled={busy} onChange={event => setValue(event.target.value)}>
+            <option value="false">否</option>
+            <option value="true">是</option>
+          </select> : <input value={value} type={type === "number" ? "number" : "text"} step="any"
+            required={type !== "tags"} disabled={busy} placeholder={type === "tags" ? "以逗号分隔多个标签" : undefined}
+            onChange={event => setValue(event.target.value)} />}
+        </label>}
+        {!field && <EntityChoice world={world} label="引用对象（可选）" value={object} onChange={choose}
+          draft={draftObject} onStage={stage} disabled={busy} optional />}
+        {!transition && <>
+          {!initial?.from_event_id && <label className="field"><span>生效故事时间</span><input value={from} disabled={busy} onChange={event => setFrom(event.target.value)} /></label>}
+          {!initial?.to_event_id && <label className="field"><span>失效故事时间</span><input value={until} disabled={busy} onChange={event => setUntil(event.target.value)} /></label>}
+        </>}
+        <label className="field"><span>来源说明</span><input value={note} disabled={busy} onChange={event => setNote(event.target.value)} /></label>
+        {error && <ErrorNotice>{error}</ErrorNotice>}
+        {latest && expectedVersion !== undefined && <SaveConflict base={expectedVersion} current={latest.version}
+          fields={[
+            ["事实名称", latest.predicate, predicate],
+            ["字段", schema?.fields.find(item => item.key === latest.field_id)?.label ?? "自由事实（文本）", definition?.label ?? "自由事实（文本）"],
+            ["事实内容", latest.value_type === "entity" ? "" : latest.value, type === "entity" ? "" : value],
+            ["引用对象", sameLabelDifferentObject ? savedLabel + " · " + savedReference : savedLabel,
+              sameLabelDifferentObject ? draftLabel + " · " + reference : draftLabel],
+            ["生效故事时间", latest.valid_from || "", from],
+            ["失效故事时间", latest.valid_until || "", until],
+            ["来源说明", latest.source_note, note],
+          ]}
+        />}
+      </div>
+      <div className="dialog-actions">
+        <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>取消</Button>
+        {latest ? latest.status === "active" && <Button type="button" variant="primary" onClick={() => {
+          setExpectedVersion(latest.version);
+          setLatest(undefined);
+        }}>保留草稿，以 v{latest.version} 继续编辑</Button> : <>
+          {!transition && <Button type="button" disabled={busy} onClick={() => setDefining(true)}>定义扩展字段</Button>}
+          <Button variant="primary" disabled={busy || !schema || transition && !anchor || (type === "entity" && !reference && !draftObject)}>
+            {transition ? '保存新状态' : '确认并保存事实'}
+          </Button>
+        </>}
+      </div>
+    </form>}
+  </Dialog>;
 }
 const typeNames = {
   text: "文本",

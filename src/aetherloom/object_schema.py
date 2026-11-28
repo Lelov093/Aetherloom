@@ -2,7 +2,7 @@
 import json
 from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 from typing import Literal
-from .creation_models import Model
+from .creation_models import EntityCreate, Model
 
 CORE_FIELDS = {
     'character': {'background':'背景', 'personality':'性格', 'capabilities':'能力', 'goals':'目标'},
@@ -39,9 +39,16 @@ class FactInput(Model):
     field_id: str | None = None
     typed_value: TypedValue | None = None
     object_id: str | None = None
+    new_object: EntityCreate | None = None
     valid_from: str | None = Field(default=None,max_length=160)
     valid_until: str | None = Field(default=None,max_length=160)
     source_note: str = Field(default='人工世界编辑',max_length=500)
+
+    @model_validator(mode='after')
+    def reference_choice(self):
+        if self.new_object is not None and (self.object_id is not None or self.typed_value is not None):
+            raise ValueError('请选择已有对象或填写一张待创建的卡片。')
+        return self
 
 class FactEdit(FactInput):
     version: int = Field(ge=1)

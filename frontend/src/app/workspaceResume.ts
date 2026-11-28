@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
 
-type Workspace = "create" | "review" | 'simulate' | 'explore';
+const workspaces = ['create', 'inspirations', 'simulate', 'explore'] as const;
+type Workspace = typeof workspaces[number];
 const key = (world: string, workspace: Workspace) =>
   `aetherloom:resume:${world}:${workspace}`;
 export function workspaceDestination(
@@ -27,12 +28,13 @@ export function useWorkspaceResume(world?: string) {
   const location = useLocation();
   useEffect(() => {
     if (!world) return;
-    for (const workspace of ["create", "review", 'simulate', 'explore'] as const) {
+    for (const workspace of workspaces) {
       const base = `/worlds/${world}/${workspace}`;
       if (
         location.pathname === base ||
         location.pathname.startsWith(base + "/")
       ) {
+        if (workspace === 'simulate' && new URLSearchParams(location.search).has('prepare')) return;
         try {
           localStorage.setItem(
             key(world, workspace),

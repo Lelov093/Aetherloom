@@ -439,7 +439,7 @@ export function ReviewWorkspace({ world }: { world: string }) {
           ))}
           {inbox && !list.length && (
             <p className="review-empty">
-              当前筛选下没有提案。你可以继续整理资料，或从模拟结果中建立审阅提案。
+              当前筛选下没有提案。
             </p>
           )}
         </div>

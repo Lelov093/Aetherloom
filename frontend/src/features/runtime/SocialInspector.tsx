@@ -1,8 +1,19 @@
 import { displayName, evidenceText, type Projection } from './api';
 import { CognitionInspector } from './CognitionInspector';
+import { modelStopMessages } from './RuntimeModelBudget';
 const status:Record<string,string>={active:'进行中',blocked:'受阻（本人判断）',completed:'已完成（本人判断）',abandoned:'已放弃',pending:'已作出／待回应',accepted:'对方已接受',fulfilled:'实际行动已履行',fulfilled_late:'实际行动已履行（逾期）',overdue:'已逾约定期限',declined:'已拒绝',open:'交谈中',ended:'已结束',left:'已离场'};
 export function executionText(p:Projection):string {
   if(p.historical)return '历史状态 · 只读';
+  if(p.conflict_pending)return '关键冲突待处理';
+  if(p.control.reason === 'awaiting_activity')return p.scheduler?.pending_jobs.length ? '等待中 · 有新事件可继续' : '等待中 · 暂无后续事项';
+  if(p.control.reason === 'observation_pause')return '已命中观察停点';
+  if(p.control.reason === 'segment_complete')return '本段已完成';
+  if(p.control.reason === 'worldline_switched')return '切线时已暂停';
+  if(p.model_budget?.exploration?.recovery?.status === 'commit_unknown')return '提交回执待核对';
+  if(p.control.reason === 'model:commit_unknown' && p.model_budget?.exploration?.recovery?.status === 'commit_recovered')return '已找回提交回执';
+  if(['model:commit_unknown', 'model:model_connection_lost'].includes(p.control.reason) && p.model_budget?.exploration?.recovery?.status === 'not_committed')return '已核对 · 原步未提交';
+  if((p.model_budget?.exploration || p.control.reason === 'story_time_limit') && modelStopMessages[p.control.reason])return modelStopMessages[p.control.reason];
+  if(p.model_budget?.exploration && p.control.reason.startsWith('model:'))return '模型请求暂停';
   const e=p.execution;
   if(!e)return p.control.status==='running'?'允许运行':'已暂停';
   const a=p.model_budget?.allocation;

@@ -1,116 +1,129 @@
 # Aetherloom
 
-**0.7.1 · Windows 源码补丁版**
+Aetherloom 是面向小说作者与世界构建创作者的本地桌面工作台。把正文、设定和大纲整理在同一个世界中，沿人物、地点、时期和出处浏览，再用一条文本世界线推演「如果他们现在见面会怎样」。推演片段可带回灵感库，正式设定由作者直接编辑。
 
-本版更新 Electron 44.9.1、Vite 8.3.3 和 undici 7.30.1，修复 0.7.0 锁文件中报告的依赖安全问题。
+## 能做什么
 
-Aetherloom 是面向小说作者与世界构建创作者的本地桌面工作台。你可以整理正文、设定和大纲，建立人物、地点、事件与关系，再从一个明确的起点观察世界如何演化。整理、阅读、检索、关联资料和体验内置学院都可以在无模型配置的情况下开始。
+| 模块 | 用法 |
+|---|---|
+| 世界与作品 | 在一个世界下整理多部作品、章节、场景和资料。导入 TXT、Markdown、DOCX 或 PDF，保留来源版本及可下载的原件。 |
+| 对象与探索 | 管理人物、地点、事件等对象。按分类、关系、时期和作者地图浏览，从对象回查相关作品、片段和设定。 |
+| 文本模拟 | 从正文或世界首页选定背景、角色、位置和开场，冻结出发资料。按规则推进或暂停，查历史、分叉、重开、比较分支。角色使用各自可知的信息。 |
+| 灵感与导出 | 把选中的已提交消息带回章幕侧栏，从灵感打开原步和冻结出处。作者可将灵感关联到改写后的正文，按目录选择内容，交付读者稿或导出世界资料。 |
 
-## 主要功能
+## Windows 源码运行
 
-| 模块 | 你可以做什么 |
-| --- | --- |
-| 创作与阅读 | 建立世界和作品，导入 TXT、Markdown、DOCX、PDF，按分类和标签浏览。把人物、地点和正式记录关联到资料版本或具体原文选区。 |
-| 探索 | 在关系、时间和 Canon Map 之间导航，查看来源和正式记录。时间视图按明确年份展示，地图显示已记录的地点和连通。焦点、筛选和布局可保存到本机。 |
-| 世界模拟 | 使用原有文本准备流程，或从学院模板配置并冻结起点。学院有庭院、教室、图书馆、校外街区和六个可选角色槽位。文本与 2.5D 打开同一条世界线，可查看历史、分叉和比较。 |
-| 审阅与灵感 | 从已提交的世界线结果中选取内容，保存为带来源的灵感或提交审阅。正式设定在作者明确接受提案后才会更新。 |
+安装 **Node.js 22.12 或更高版本**（含 npm）和 **uv**。首次准备依赖需要联网。uv 按仓库配置准备 Python 3.12，并将 Python 依赖安装到项目内的 `.venv`。[Node.js 下载](https://nodejs.org/en/download) · [uv 安装](https://docs.astral.sh/uv/getting-started/installation/)
 
-## 准备运行环境
-
-| 工具 | 用途 |
-| --- | --- |
-| Git | 获取和更新源码。[Git 下载](https://git-scm.com/download/win) |
-| Node.js 22.12 或更高版本与 npm | 安装前端依赖、构建界面和运行 Electron。[Node.js 下载](https://nodejs.org/en/download) |
-| uv | 按锁文件准备项目内的 Python 3.12 环境。[uv 安装指南](https://docs.astral.sh/uv/getting-started/installation/) |
-| Godot 4.7.2 Standard | 体验学院 2.5D 时使用 Windows 控制台版可执行文件。启动脚本会按需获取匹配的 Web 导出模板并生成场景资源。[Godot 4.7.2 下载](https://github.com/godotengine/godot-builds/releases/tag/4.7.2-stable) |
-
-首次准备需要网络。可在 PowerShell 中用 `git --version`、`node --version`、`npm --version` 和 `uv --version` 检查工具是否可用。
-
-## 获取并启动
-
-在 PowerShell 中获取源码。如果你已下载源码压缩包，解压后打开其中包含 `pyproject.toml` 的目录即可。
+在 GitHub 仓库选择 **Code → Download ZIP**，解压后进入含 `pyproject.toml` 的目录。如果已安装 Git，也可以用下面的命令获取源码。[GitHub 下载源码说明](https://docs.github.com/en/repositories/working-with-files/using-files/downloading-source-code-archives)
 
 ```powershell
 git clone https://github.com/Lelov093/Aetherloom.git
 Set-Location Aetherloom
 ```
 
-已有源码目录升级时，先从托盘选择「暂停保存并退出」。更新源码后在项目根目录运行 `npm --prefix frontend ci` 同步锁定的依赖，再使用原来的启动方式。
+### 打开工作区
 
-### 整理资料或使用原有文本模拟
+在源码目录双击 [Start.cmd](Start.cmd)。首次运行会准备锁定依赖、创建本地工作区、构建界面并打开桌面。此后从同一目录启动即可打开原工作区。应用已经运行时，再次双击会显示现有窗口。
 
-```powershell
-.\scripts\start.ps1
-```
+### 从世界到读者稿
 
-启动后先「创建世界」，再到「创作」建立作品、导入资料并核对转换结果。可以从「世界对象」建立人物与地点，补充正式记录和原文来源，再到「探索」浏览关系、时间与地图。
+1. 从「世界库 → 创建世界」进入工作区。在「创作」建立一部作品并导入资料，录入会出场的人物和地点。用「探索」查对象关系及原文出处。
+2. 打开要推演的章幕，点「更多正文操作 → 从此处准备模拟」。选择背景、角色、地点和开场，确认资料与角色所知，再保存起点。也可从世界首页点「准备文本模拟」。
+3. 在世界线里提交角色行动或按规则推进。对感兴趣的已提交消息点「回查原话 → 保存为灵感」，再回到发起章幕的灵感侧栏。
+4. 用灵感辅助改写正文。到作品的「导出作品」选「读者稿」，预览目录后选择导出位置。可直接打开导出的正文和随稿资源。
 
-### 启动学院 2.5D
+## 配置
 
-学院需要已准备的共享资料库。首次体验可用以下命令创建空的学院工作区。将 Godot 路径替换为你解压后的 `console.exe` 路径。
+### 工作区路径
 
-```powershell
-$env:AETHERLOOM_GODOT_EXE = 'C:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe'
-uv --cache-dir .cache/uv run --frozen python scripts/academy_database.py .data/academy/aetherloom.db --new-workspace
-$env:AETHERLOOM_DB = (Resolve-Path -LiteralPath .data/academy/aetherloom.db).Path
-.\scripts\Start-Academy.cmd
-```
+默认工作区数据库是 `.data/workspace/aetherloom.db`，导入原件保存在数据库旁的 `imports/`。桌面配置位于 `.data/desktop/`。整理、写作、浏览与规则推进可以直接使用默认配置。
 
-之后可跳过创建命令，在启动用的 PowerShell 会话指定同一个 `AETHERLOOM_DB`。已有共享资料库时也可直接指定其路径。旧版资料库可继续用常规入口打开。学院的创建命令要求目标目录全新，因此可以把新工作区与旧资料分开保存。
-
-1. 在世界库创建或打开世界，进入「模拟 → 学院与周边街区 → 配置学院起点」。
-2. 选择角色槽位、外观和初始地点，可绑定作品中的角色或地点。展开「核对本次起点」，确认采用的资料和规则后点「保存并进入世界」。
-3. 世界线保存后处于暂停状态。「文本」与「2.5D」可以随时切换。在作者观察模式点击出口可浏览相邻地点。在角色参与模式，先选中角色，再点出口并在弹窗中确认移动。
-4. 场景资源加载出错时，可重试、返回同一世界线的文本，或使用可用的兼容视图。
-
-## 可选模型配置
-
-原有文本场景需要在显式点击「继续运行」时使用适配的模型。配置文件是项目根目录下的 `.env`。首次配置可从 [.env.example](.env.example) 复制一份后编辑。
+要打开其他工作区，先退出当前桌面，在含 `Start.cmd` 的源码目录打开 PowerShell，将 `AETHERLOOM_DB` 设为目标数据库的绝对路径，再执行 `Start.cmd`。
 
 ```powershell
-Copy-Item -LiteralPath .env.example -Destination .env
+$env:AETHERLOOM_DB = 'D:\我的工作区\aetherloom.db'
+.\Start.cmd
 ```
 
-| 字段 | 填写内容 |
-| --- | --- |
-| `AETHERLOOM_PROVIDER` | 接口协议类型，需符合应用与模型服务的兼容范围。 |
-| `AETHERLOOM_API_BASE_URL` | 模型服务提供的 API 基础地址。按文档填写所需的路径前缀。 |
-| `AETHERLOOM_API_KEY` | 你自己的 API 密钥，保存在本机的 `.env`。 |
-| `AETHERLOOM_CREATOR_MODEL` | 服务端提供且应用支持的准确模型标识。 |
-| `AETHERLOOM_REQUEST_TIMEOUT_SECONDS` | 可选请求超时时间，单位为秒。 |
+### 可选模型服务
 
-保存配置后从托盘退出并重启。同名进程环境变量优先于 `.env`。启用模型后，实际请求会将本次使用的资料或角色上下文发送到所配置的服务。
+文本模拟默认使用无模型路径。要配置可选模型服务，在源码目录将 [`.env.example`](.env.example) 复制为 `.env`。如果已有 `.env`，请直接编辑该文件。真实密钥只放在本机的 `.env`。
 
-在「模拟 → 准备新场景」选择参与者、时间起点、角色已知信息和规则，核对后创建一条暂停的世界线。需要模型驱动它时再点「继续运行」。可在「审阅」中比较、修改、拒绝或接受选中的结果。
+| `.env` 字段 | 填写内容 |
+|---|---|
+| `AETHERLOOM_PROVIDER` | 服务协议。使用模板中的 `openai-compatible`。 |
+| `AETHERLOOM_API_BASE_URL` | 服务提供的 API 根地址。若要求版本路径（如 `/v1`），将其一起填入。 |
+| `AETHERLOOM_API_KEY` | 该服务颁发的密钥。 |
+| `AETHERLOOM_CREATOR_MODEL` | 服务接受的完整模型标识。 |
+| `AETHERLOOM_REQUEST_TIMEOUT_SECONDS` | 可选的单次请求超时时间，单位为秒。 |
 
-## 模块与设计
-
-| 位置 | 职责 |
-| --- | --- |
-| [前端工作区](frontend/src) | React、TypeScript 和 Vite 提供创作、探索、模拟与审阅界面。 |
-| [桌面宿主](frontend/electron) | Electron 管理桌面窗口、托盘和本地 API 进程。 |
-| [本地服务](src/aetherloom) | Python、FastAPI 和 SQLite 管理资料、来源、正式记录及本地模拟。 |
-| [世界 Runtime](src/aetherloom/runtime) | 冻结场景起点，按规则裁决行动，保存世界线和历史，为作者与角色分别提供授权视图。 |
-| [学院表现层](frontend/godot/academy) | Godot Web 渲染学院 2.5D，兼容视图使用 Three.js。地图、镜头和动作动画只负责展示已提交的世界状态。 |
-
-资料与作者意图、正式设定（Canon）、模拟中的世界状态分别保存。角色视图还区分本人掌握的知识、信念和听到的报告。作者可以查看获授权的世界线历史，角色参与视角只查看所在场景及自身可见内容。
-
-## 数据保存与常见问题
-
-- 常规资料库位于 `.data/aetherloom.db`，学院使用 `AETHERLOOM_DB` 指定的库。导入原件存放在对应资料库旁的 `imports/`，桌面偏好默认位于 `.data/desktop/`。
-- 关闭窗口会将应用收起到托盘。需要结束、换资料库或更新源码时，从托盘选择「暂停保存并退出」。重开后可查看已保存的状态。
-- 如果 PowerShell 阻止启动脚本，可用以下命令在本次启动时指定执行策略。
+模型运行依赖 [Runtime 适配器](src/aetherloom/runtime/model_provider.py)支持的服务和模型，并要求本地宿主已批准并分配本轮额度。已具备这些条件时，可在 PowerShell 指定独立的模型账本并启用模型，再启动应用。请将账本示例路径改成自己的账本位置。
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
+$env:AETHERLOOM_VNEXT_MODEL = '1'
+$env:AETHERLOOM_VNEXT_MODEL_LEDGER = Join-Path (Get-Location).Path '.data\model-ledger.db'
+.\Start.cmd
 ```
 
-- 学院启动提示找不到 Godot 时，检查 `AETHERLOOM_GODOT_EXE` 是否指向解压后的控制台版程序。看到共享资料库提示时，确认已执行首次创建命令，并且启动窗口能读取同一个 `AETHERLOOM_DB`。
-- 如果 Electron 下载失败且你的网络通过代理访问 GitHub，请在启动用的 PowerShell 会话配置 `HTTPS_PROXY`，设置 `$env:ELECTRON_GET_USE_PROXY = '1'` 后重新启动。
-- 桌面无法启动时，先看启动窗口输出，再查 `.logs/desktop-service.log`。导入 DOCX 或 PDF 后，建议核对复杂排版和识别结果。
+模型账本和工作区数据库使用不同文件。实际模型调用会把本场需要的上下文发给你配置的服务。要切回无模型运行，退出桌面，把 `AETHERLOOM_VNEXT_MODEL` 设为 `0`，再启动。
 
-当前空间体验限于一套固定学院场景。年份探索依赖已录入的明确年份。可执行的模拟规则、支持的模型服务和角色规模以场景设置及界面提示为准。
+## 保存与退出
+
+- 关闭窗口会收起到系统托盘。双击 [Stop.cmd](Stop.cmd) 或从托盘选择「暂停保存并退出」，应用会先确认暂停保存，再退出。
+- 更新源码前先退出应用并[备份工作区](#备份与恢复工作区)。更新后可在源码目录用 `npm --prefix frontend ci` 同步锁定的前端依赖，再从同一路径启动。
+
+## 备份与恢复工作区
+
+先双击 `Stop.cmd` 或从托盘选择「暂停保存并退出」。等应用退出后，在源码目录打开 PowerShell。如果刚解压源码，先运行 `uv sync --frozen` 准备项目内的 `.venv`。
+
+### 备份
+
+下面以默认资料库为例。如果通过 `AETHERLOOM_DB` 使用了其他库，把 `$workspaceDb` 改成实际资料库的绝对路径。每次备份选择一个尚不存在的目录。
+
+```powershell
+$workspaceDb = Join-Path (Get-Location).Path '.data\workspace\aetherloom.db'
+$backupDir = Join-Path $env:USERPROFILE 'Aetherloom-backups\before-update'
+.\.venv\Scripts\python.exe -X utf8 -m aetherloom.workspace_backup backup --database $workspaceDb --destination $backupDir
+```
+
+备份目录内的 `database.db` 和 `resources` 应一起保留。`resources` 包含工作区保存的导入原件。
+
+### 恢复并打开
+
+让 `$backupDir` 指向完整备份，用另一个尚不存在的目录接收恢复工作区。恢复成功后，在同一 PowerShell 窗口设置 `AETHERLOOM_DB` 并启动。
+
+```powershell
+$backupDir = Join-Path $env:USERPROFILE 'Aetherloom-backups\before-update'
+$restoreDir = Join-Path $env:USERPROFILE 'Aetherloom-restored'
+.\.venv\Scripts\python.exe -X utf8 -m aetherloom.workspace_backup restore --backup $backupDir --destination $restoreDir
+if ($LASTEXITCODE -eq 0) {
+    $env:AETHERLOOM_DB = Join-Path $restoreDir 'aetherloom.db'
+    .\Start.cmd
+}
+```
+
+恢复后可打开原作品正文，从资料侧栏下载导入原件，并从已有灵感回到原模拟步骤。若命令提示资料库损坏或缺少原件，换一份完整备份再恢复。以后从新的 PowerShell 窗口打开恢复库时，重新设置 `AETHERLOOM_DB` 再运行 `Start.cmd`。
+
+## 项目结构与技术栈
+
+| 源码路径 | 职责 |
+|---|---|
+| [`frontend/electron`](frontend/electron) | Electron 桌面入口。启动本地服务，处理窗口、托盘、保存退出和本机文件对话框。 |
+| [`frontend/src/features`](frontend/src/features) | React 与 TypeScript 的世界库、编辑器、探索、文本模拟、灵感和导出界面。正文编辑使用 Tiptap，Vite 负责构建。 |
+| [`src/aetherloom`](src/aetherloom) | Python 3.12 服务。FastAPI 与 Uvicorn 通过本机回环地址提供接口，SQLite 保存工作区和版本记录。 |
+| [`src/aetherloom/runtime`](src/aetherloom/runtime) | 管理世界线冻结起点、角色知情、行动裁决、已提交事件和分支。可选模型只提出行动，具体结果由 Runtime 依规则提交。 |
+| [`scripts/start.ps1`](scripts/start.ps1) | Windows 源码启动流程。准备锁定依赖，选择或创建共享工作区，构建并启动桌面。 |
+
+## 启动遇到问题
+
+- 提示找不到 `uv` 或 `npm` 时，重新打开 PowerShell，用 `uv --version`、`node --version` 和 `npm --version` 核对工具。
+- 可在源码目录打开 PowerShell 运行 `.\Start.cmd` 和 `.\Stop.cmd` 查看命令输出。
+- 提示需准备共享资料库时，确认 `AETHERLOOM_DB` 指向已存在的共享库。
+- 首次启动需要从 GitHub 下载 Electron。如果网络通过代理访问 GitHub，在同一个 PowerShell 窗口设置网络提供的 `HTTPS_PROXY`，再运行 `.\Start.cmd`。[Electron 代理说明](https://www.electronjs.org/docs/latest/tutorial/installation#proxies)
+- 桌面服务未能启动时，查看启动窗口的输出和 `.logs/desktop-service.log`。
+- 启用模型后启动失败时，检查适配器支持范围、`.env` 和账本路径。需要继续整理或写作时，可先将 `AETHERLOOM_VNEXT_MODEL` 设为 `0`，再启动桌面。
 
 ## 许可证
 
-本项目采用 [Apache License 2.0](LICENSE)，版权信息见 [NOTICE](NOTICE)。第三方软件适用各自的许可证。用户保有对自己导入的资料的权利。
+项目采用 [Apache License 2.0](LICENSE)，版权信息见 [NOTICE](NOTICE)。第三方软件适用各自的许可证，作者保有自己导入资料的权利。

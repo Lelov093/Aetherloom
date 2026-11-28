@@ -968,7 +968,6 @@ textarea::placeholder {
     gap: 10px;
   }
 }
-.review-badge { background: var(--surface-selected); color: var(--text-link); border-radius: var(--radius-sm); padding: 2px 5px; font-size: 11px; overflow-wrap: anywhere; }
 .activity-trigger { white-space: nowrap; }
 .topbar-context > .activity-trigger,
 .topbar-context > .button[aria-label="浏览世界对象"] { min-width: 40px; justify-content: center; }

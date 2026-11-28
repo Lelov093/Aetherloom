@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useBlocker, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useWorkspaceTrail } from "../../components/WorkspaceContext";
 import {
   acceptEnvelope,
@@ -13,15 +13,20 @@ import {
 } from "./api";
 import { RuntimeMonitor } from "./RuntimeMonitor";
 import "../../styles/runtime.css";
+import { modelStopMessages } from './RuntimeModelBudget';
+
 const failMessage = (e: unknown) =>
   e instanceof RuntimeError && e.status === 401
     ? "授权已失效，已清除观察内容。请重新连接。"
     : e instanceof RuntimeError && e.status === 403
       ? "当前角色无权访问此世界线。"
-      : "连接暂时中断。已保存的世界不会受影响，可重新连接。";
+      : modelStopMessages[(e as Error).message] ?? "连接暂时中断。已保存的世界不会受影响，可重新连接。";
 
 export function RuntimeWorkspace({ world }: { world: string }) {
-  const fromReview = useLocation().state?.simulationReviewWorld === world;
+  const origin = useLocation().state;
+  const returnLabel = origin?.runtimeReturn === 'inspiration' ? '返回灵感'
+    : origin?.runtimeReturn === 'frozen_source' ? '返回冻结出处'
+    : origin?.simulationReviewWorld === world ? '返回审阅' : undefined;
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams(),
     line = params.get("line");
@@ -39,6 +44,7 @@ export function RuntimeWorkspace({ world }: { world: string }) {
   }, []);
   const [role, setRole] = useState<Role>("creator_observer"),
     [cycle, setCycle] = useState(0);
+  const [spoilerFree, setSpoilerFree] = useState(() => localStorage.getItem(`runtime-spoiler-free:${world}`) === '1');
   const [binding, setBinding] = useState<{ line: string; actor: string }>();
   const [session, setSession] = useState<HostSession>(),
     [lines, setLines] = useState<Worldline[]>([]);
@@ -55,6 +61,21 @@ export function RuntimeWorkspace({ world }: { world: string }) {
   const generation = useRef(0),
     current = useRef<Envelope>(undefined);
   useWorkspaceTrail([{ label: "世界模拟" }]);
+  const leaving = useBlocker(({ nextLocation }) => Boolean(line && session?.role === 'creator_observer' &&
+    (new URLSearchParams(nextLocation.search).get('line') !== line || !nextLocation.pathname.includes('/simulate'))));
+  useEffect(() => {
+    if (leaving.state !== 'blocked' || !session || !line) return;
+    let active = true;
+    void runtimeRequest(session, `/worldlines/${encodeURIComponent(line)}/control/leave`, undefined, 'POST')
+      .then(() => { if (active) leaving.proceed(); })
+      .catch(() => {
+        if (!active) return;
+        setError('还未确认原世界线已暂停，请检查连接后再切换。');
+        leaving.reset();
+      });
+    return () => { active = false; };
+  }, [leaving, session, line]);
+  useEffect(() => { setActor(''); }, [line]);
 
   useEffect(() => {
     let active = true;
@@ -77,6 +98,7 @@ export function RuntimeWorkspace({ world }: { world: string }) {
           role,
           binding?.line,
           binding?.actor,
+          spoilerFree,
         );
         if (!active || !next) return;
         const saved = await runtimeRequest<Worldline[]>(
@@ -105,7 +127,7 @@ export function RuntimeWorkspace({ world }: { world: string }) {
       active = false;
       abort.abort();
     };
-  }, [world, role, cycle, binding]);
+  }, [world, role, cycle, binding, spoilerFree]);
 
   useEffect(() => {
     const run = ++generation.current,
@@ -215,10 +237,6 @@ export function RuntimeWorkspace({ world }: { world: string }) {
   }
   function switchLine(next: string, seq?: number) {
     if (next === line && seq === undefined) return;
-    ++generation.current;
-    setFrame(undefined);
-    current.current = undefined;
-    setActor("");
     setParams({ line: next, ...(seq === undefined ? {} : {seq: String(seq)}), ...(mode === "2d" ? { view: "2d" } : {}) });
   }
   async function control(action: string) {
@@ -261,8 +279,17 @@ export function RuntimeWorkspace({ world }: { world: string }) {
       lines={lines}
       line={line}
       role={role}
+      spoilerFree={spoilerFree}
+      onSpoilerFree={value => {
+        localStorage.setItem(`runtime-spoiler-free:${world}`, value ? '1' : '0');
+        ++generation.current;
+        setFrame(undefined);
+        setSession(undefined);
+        current.current = undefined;
+        setSpoilerFree(value);
+      }}
       history={history}
-      busy={busy}
+      busy={busy || leaving.state !== 'unblocked'}
       error={error}
       connection={connection}
       online={online}
@@ -277,7 +304,7 @@ export function RuntimeWorkspace({ world }: { world: string }) {
       onRole={switchRole}
       onHistory={setHistory}
       onControl={control}
-      onReturnToReview={fromReview && role === "creator_observer" ? () => navigate(-1) : undefined}
+      returnTo={returnLabel && role === 'creator_observer' ? { label: returnLabel, goBack: () => navigate(-1) } : undefined}
       onReconnect={() => {
         ++generation.current;
         setFrame(undefined);

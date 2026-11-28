@@ -67,7 +67,7 @@ class EvidenceClaim(SocialModel):
 
 
 class GroundedEvidence(EvidenceClaim):
-    evidence_type: Literal['current_observation', 'historical_observation', 'action_result', 'report', 'read_text', 'text_comparison', 'initial', 'subjective']
+    evidence_type: Literal['current_observation', 'historical_observation', 'event_observation', 'action_result', 'report', 'read_text', 'text_comparison', 'initial', 'subjective']
 
 
 class BeliefMeta(SocialModel):

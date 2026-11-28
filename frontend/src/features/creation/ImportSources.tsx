@@ -55,7 +55,7 @@ export function ImportSources({
       {source?.files.map((file, i) => (!names.length || names.includes(file.name)) && (
         <a key={i} className="object-inspector-link" href={file.url} download>
           {file.name} · 下载原件{file.revision_view && ` · 导入${file.revision_view === 'final' ? '修订后' : '修订前'}正文`}
-          {refs.some(r=>r.file_index===i)&&` · 来源页 ${refs.filter(r=>r.file_index===i).map(r=>r.page).join('、')}`}
+          {refs.some(r=>r.file_index===i)&&` · 来源页 ${refs.filter(r=>r.file_index===i).map(r=>r.page + 1).join('、')}`}
         </a>
       ))}
       {!!source?.warnings.length && (

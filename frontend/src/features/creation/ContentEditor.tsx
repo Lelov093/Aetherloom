@@ -32,7 +32,15 @@ import { EntityContext } from "./EntityContext";
 import { DocumentContext } from "./DocumentContext";
 import { ContentReferences } from "./ContentReferences";
 import { DocumentMaterials } from './MaterialSources';
+import { ObjectFromSourceDialog, type CreatedSourceObject, type SelectedSource } from './ObjectFromSourceDialog';
 import { sourceSelection } from './sourceProjection';
+import { manuscriptSelection, useManuscriptMenu, type ManuscriptSelection } from './useManuscriptMenu';
+import { WritingInspirations } from './WritingInspirations';
+import { InspirationAdoptionDialog, InspirationAdoptionList } from './InspirationAdoptions';
+import { adoptionLibraryPath, adoptionSourcePath, adoptionStateLabel } from './inspirationAdoptionApi';
+import { InspirationAnchor, useInspirationAnchor } from './useInspirationAnchor';
+import { ChapterNarrative } from './Narrative';
+import { PassageEditor } from './NarrativeEditors';
 import { ObjectBrowser } from "../objects/ObjectBrowser";
 import { ReadingSettings, useWritingFont, useReadingLayout } from './WritingFont';
 import { materialCategories } from './MaterialClassification';
@@ -42,6 +50,7 @@ import { type ObjectRef } from "../objects/api";
 import {
   creationApi,
   emptyDocument,
+  isWritingNode,
   type ContentNode,
   type Entity,
   type History,
@@ -59,6 +68,7 @@ export function ContentEditor({
   onToggleTree,
   onResetTreeWidth,
   switching = false,
+  archivedReading = false,
 }: {
   initial: ContentNode;
   entities: Entity[];
@@ -70,10 +80,11 @@ export function ContentEditor({
   onToggleTree: () => void;
   onResetTreeWidth: () => void;
   switching?: boolean;
+  archivedReading?: boolean;
 }) {
   const navigate = useNavigate();
   const [params,setParams] = useSearchParams();
-  const reading = params.get('mode') === 'read';
+  const reading = archivedReading || params.get('mode') === 'read';
   const readingRef = useRef(reading);
   readingRef.current = reading;
   const writingFont = useWritingFont();
@@ -98,8 +109,21 @@ export function ContentEditor({
   const context = rightPanel.open, setContext = rightPanel.setOpen;
   const [focus, setFocus] = useState(false),
     [tab, setTab] = useState("inspector");
+  const requestedContext = params.get('context');
+  useEffect(() => {
+    if (requestedContext === 'inspirations') {
+      setTab('inspirations');
+      setContext(true);
+    }
+  }, [requestedContext, setContext]);
   const [selection, setSelection] = useState({ from: 0, to: 0, text: "" }),
-    [picker, setPicker] = useState<"entity" | "content" | null>(null);
+    [picker, setPicker] = useState<{ kind: 'entity' | 'content'; from: number; to: number; doc: ManuscriptSelection['doc'] } | null>(null);
+  const [readingSelection, setReadingSelection] = useState<typeof selection>();
+  const [sourceSelectionDraft, setSourceSelectionDraft] = useState<SelectedSource>();
+  const [narrativeSelection, setNarrativeSelection] = useState<SelectedSource>();
+  const [adoptionSelection, setAdoptionSelection] = useState<SelectedSource>();
+  const [narrativeRefresh, setNarrativeRefresh] = useState(0);
+  const [createdSourceObject, setCreatedSourceObject] = useState<CreatedSourceObject>();
   const [inspected, setInspected] = useState<Entity>(),
     [history, setHistory] = useState<History[] | null>(null),
     [revision, setRevision] = useState<History>();
@@ -116,6 +140,7 @@ export function ContentEditor({
       EntityMention,
       ContentLink,
       DocumentSearch,
+      InspirationAnchor,
     ],
     content: initial.document || emptyDocument,
     editable: !reading,
@@ -186,6 +211,7 @@ export function ContentEditor({
       });
     },
   });
+  const menu = useManuscriptMenu(editor, `${initial.id}:${reading}`, !archivedReading && !switching);
   useLayoutEffect(()=>{
     editor?.setEditable(!reading && !switching, false);
   },[editor,reading,switching]);
@@ -203,12 +229,30 @@ export function ContentEditor({
     editor.view.updateState(EditorState.create({ schema: editor.schema, doc: editor.state.doc, plugins: editor.state.plugins }));
     setMetadata(initial.metadata);
     setSelection({ from: 0, to: 0, text: '' });
+    setReadingSelection(undefined);
+    setSourceSelectionDraft(undefined);
+    setNarrativeSelection(undefined);
+    setAdoptionSelection(undefined);
+    setCreatedSourceObject(undefined);
     inspectEntity(undefined);
     setHistory(null); setRevision(undefined); setPicker(null);
     setDirty(false); setError(''); setState('已保存');
     setTab('inspector');
   }, [editor, initial.id]);
+  useEffect(() => {
+    if (!editor || !reading || archivedReading) return;
+    function syncReadingSelection() {
+      const selected = manuscriptSelection(editor);
+      setReadingSelection(selected && { from: selected.from, to: selected.to, text: selected.text });
+    }
+    document.addEventListener('selectionchange', syncReadingSelection);
+    return () => {
+      document.removeEventListener('selectionchange', syncReadingSelection);
+      setReadingSelection(undefined);
+    };
+  }, [editor, reading, archivedReading]);
   const readingPosition = useReadingPosition(world, initial.id, reading, !!editor);
+  const adoption = useInspirationAnchor(editor, world, initial, params.get('adoption'), switching, dirty, reading);
   const editorRef = useRef(editor);
   editorRef.current = editor;
   useEffect(() => {
@@ -223,6 +267,7 @@ export function ContentEditor({
   }, [initial.version]);
   async function persist(): Promise<boolean> {
     clearTimeout(timer.current);
+    if (archivedReading) return true;
     if (running.current) {
       const ok = await running.current;
       return ok ? persist() : false;
@@ -328,17 +373,70 @@ export function ContentEditor({
     }
   }
   function attach(picked: ObjectRef) {
-    if (!editor) return;
+    if (!editor || !picker) return;
+    if (editor.state.doc !== picker.doc) {
+      setPicker(null);
+      setError('正文已变动，请重新选择要链接的原文。');
+      return;
+    }
     editor
       .chain()
       .focus()
-      .setTextSelection({ from: selection.from, to: selection.to })
+      .setTextSelection({ from: picker.from, to: picker.to })
       .setMark(
-        picker === "entity" ? "entityMention" : "contentLink",
-        picker === "entity" ? { entityId: picked.id } : { nodeId: picked.id },
+        picker.kind === "entity" ? "entityMention" : "contentLink",
+        picker.kind === "entity" ? { entityId: picked.id } : { nodeId: picked.id },
       )
       .run();
     setPicker(null);
+  }
+  const selectedSource = menu.open ? menu.selection : reading ? readingSelection : selection;
+  const hasSelectedSource = Boolean(selectedSource?.text.trim());
+  function openReferencePicker(kind: 'entity' | 'content') {
+    if (editor && selectedSource?.text.trim()) setPicker({ kind, from: selectedSource.from, to: selectedSource.to,
+      doc: menu.selection?.doc ?? editor.state.doc });
+  }
+  function restoreEditorRange() {
+    const snapshot = menu.selection;
+    if (snapshot && editor?.state.doc === snapshot.doc) {
+      editor.commands.setTextSelection({ from: snapshot.from, to: snapshot.to });
+    }
+  }
+  function preserveSelectionOnMouseDown(event: React.MouseEvent) {
+    if (event.button === 0 && hasSelectedSource) event.preventDefault();
+  }
+  async function freezeSelection(): Promise<SelectedSource | undefined> {
+    if (!editor || !selectedSource?.text.trim() || archivedReading) return;
+    const before = editor.state.doc;
+    if (menu.selection && menu.selection.doc !== before) {
+      setError('正文已变动，请重新选择要绑定的原文。');
+      return;
+    }
+    const range = sourceSelection(before, selectedSource.from, selectedSource.to);
+    if (!range || !(await persist())) return;
+    const node = current.current;
+    if (node.id !== initial.id || !editor.state.doc.eq(before)) {
+      setError('正文已变动，请重新选择要绑定的原文。');
+      return;
+    }
+    const text = Array.from(node.plain_text || '').slice(range.start, range.end).join('');
+    if (text.trim()) return {
+      node_id: node.id, source_version: node.version, title: node.title, ...range, text,
+    };
+  }
+  async function prepareSimulation(selectionOnly = false) {
+    if (selectionOnly && !hasSelectedSource) return;
+    const target = new URLSearchParams({ prepare: '1', source: initial.id });
+    if (isWritingNode(initial.kind)) target.set('origin', initial.id);
+    if (reading) target.set('mode', 'read');
+    if (hasSelectedSource) {
+      const frozen = await freezeSelection();
+      if (!frozen) return;
+      target.set('version', String(frozen.source_version));
+      target.set('start', String(frozen.start));
+      target.set('end', String(frozen.end));
+    } else if (!reading && !(await persist())) return;
+    navigate(`/worlds/${world}/simulate?${target}`);
   }
   const mentionedIds = new Set<string>();
   function collectMentions(value: DocumentJSON) {
@@ -366,7 +464,8 @@ export function ContentEditor({
     { label: '项目列表', Icon: List, disabled: !editor, active: editor?.isActive('bulletList'), run: () => editor?.chain().focus().toggleBulletList().run() },
   ];
   const formatButtons = (labelled = false) => formatActions.map(({label, Icon, disabled, active, run}) =>
-    <Button key={label} variant="ghost" aria-label={label} title={label} disabled={disabled} aria-pressed={active || undefined} onClick={run}>
+    <Button key={label} variant="ghost" aria-label={label} title={label} disabled={disabled} aria-pressed={active || undefined}
+      onClick={() => { if (labelled) restoreEditorRange(); run(); }}>
       <Icon size={16}/>{labelled && label}
     </Button>);
   return (
@@ -382,35 +481,64 @@ export function ContentEditor({
         <div className="writing-toolbar" role="toolbar" aria-label={reading?'资料阅读显示':'正文格式'}>
           <div className="toolbar-group">
             <Button variant="ghost" aria-label={treeOpen?'收起作品目录':'打开作品目录'} aria-expanded={treeOpen} aria-controls="create-directory" title="作品目录" disabled={focus} onClick={onToggleTree}><PanelLeftClose size={17}/></Button>
-            <Button variant="ghost" className="reader-switch" aria-label={reading?'编辑资料':'阅读资料'} title={reading?'切换到编辑':'切换到阅读'} onClick={async()=>{
-              if(!reading&&!(await persist()))return;
-              const next=new URLSearchParams(params);if(reading)next.delete('mode');else next.set('mode','read');
-              setParams(next,{replace:true});
-            }}>{reading?<BookOpen size={17}/>:<PenLine size={17}/>}<span>{reading?'阅读':'编辑'}</span></Button>
+            {!archivedReading && (
+              <Button variant="ghost" className="reader-switch" aria-label={reading?'编辑资料':'阅读资料'} title={reading?'切换到编辑':'切换到阅读'} onClick={async()=>{
+                if(!reading&&!(await persist()))return;
+                const next=new URLSearchParams(params);if(reading)next.delete('mode');else next.set('mode','read');
+                setParams(next,{replace:true});
+              }}>{reading?<BookOpen size={17}/>:<PenLine size={17}/>}<span>{reading?'阅读':'编辑'}</span></Button>
+            )}
           </div>
           {!reading && <div className="toolbar-group format-tools">
             {formatButtons()}
           </div>}
-          <span role="status" className={`save-state ${dirty?'pending':''}`}>{switching ? '正在打开…' : reading?`v${initial.version}`:state}</span>
+          <span role="status" className={`save-state ${dirty?'pending':''}`}>{switching ? '正在打开…' : reading?`${archivedReading ? '已归档 · ' : ''}v${initial.version}`:state}</span>
+          {!archivedReading && isWritingNode(initial.kind) && <Button variant="ghost"
+            className="prepare-from-selection" disabled={!hasSelectedSource || switching}
+            title={hasSelectedSource ? '从选段准备模拟' : '在正文中选择一段文字'}
+            onMouseDown={preserveSelectionOnMouseDown} onClick={() => void prepareSimulation(true)}>
+            <Orbit size={16}/>从选段准备模拟
+          </Button>}
           <div className="reader-tools">
             <ReadingSettings {...writingFont} {...readingLayout}/>
             <DocumentFind key={initial.id} editor={editor}/>
-            <details className="editor-more">
-              <summary aria-label="更多正文操作" title="更多操作"><MoreHorizontal size={18}/></summary>
-              <div className="editor-more-menu" onClick={event=>{if((event.target as HTMLElement).closest('button'))event.currentTarget.parentElement?.removeAttribute('open');}}>
+            <button ref={menu.trigger} type="button" className="button button--ghost editor-more-trigger"
+              aria-label="更多正文操作" title="更多操作" aria-expanded={menu.toolbarOpen}
+              aria-controls={menu.id} onMouseDown={menu.rememberToolbarSelection} onClick={menu.toggleToolbar}>
+              <MoreHorizontal size={18}/>
+            </button>
+            <div ref={menu.popup} id={menu.id} popover="auto" tabIndex={-1} role="group" aria-label="正文操作"
+              className="editor-more-menu" onKeyDown={menu.onKeyDown}
+              onToggle={event => { if (event.newState === 'closed' && !event.currentTarget.matches(':popover-open')) menu.close(); }}
+              onClick={event => { if ((event.target as HTMLElement).closest('button')) menu.close(); }}>
+                {!archivedReading && <Button variant="ghost" disabled={!selectedSource?.text.trim()}
+                  onClick={async () => setSourceSelectionDraft(await freezeSelection())}><Link2 size={15}/>从选段建卡</Button>}
+                {!archivedReading && <Button variant="ghost" disabled={!selectedSource?.text.trim() || switching}
+                  onClick={async () => setNarrativeSelection(await freezeSelection())}>从选段记录叙事</Button>}
+                {!archivedReading && <Button variant="ghost" disabled={!selectedSource?.text.trim() || switching}
+                  onClick={async () => setAdoptionSelection(await freezeSelection())}>将选段关联到灵感</Button>}
                 {!reading && <>
                   <div className="compact-format-tools">{formatButtons(true)}</div>
-                  <Button variant="ghost" disabled={!selection.text} onClick={()=>setPicker('entity')}><Link2 size={15}/>链接对象</Button>
-                  <Button variant="ghost" disabled={!selection.text} onClick={()=>setPicker('content')}>内部链接</Button>
-                  {editor?.isActive('entityMention')&&<Button variant="ghost" onClick={()=>editor.chain().focus().unsetMark('entityMention').run()}>解除对象链接</Button>}
+                  <Button variant="ghost" disabled={!hasSelectedSource} onClick={() => openReferencePicker('entity')}><Link2 size={15}/>链接对象</Button>
+                  <Button variant="ghost" disabled={!hasSelectedSource} onClick={() => openReferencePicker('content')}>内部链接</Button>
+                  {editor?.isActive('entityMention')&&<Button variant="ghost" onClick={() => {
+                    restoreEditorRange(); editor.chain().focus().unsetMark('entityMention').run();
+                  }}>解除对象链接</Button>}
                   <Button variant="ghost" aria-label="保存正文" disabled={!dirty} onClick={()=>void persist()}><Save size={16}/>保存正文</Button>
                 </>}
                 <Button variant="ghost" aria-label="查看内容历史" onClick={openHistory}><HistoryIcon size={16}/>内容历史</Button>
                 <Button variant="ghost" aria-label={focus?'退出专注模式':'专注模式'} onClick={()=>{setFocus(!focus);onFocusChange(!focus);}}><Maximize2 size={16}/>{focus?'退出专注':'专注模式'}</Button>
                 <Button variant="ghost" onClick={()=>{onResetTreeWidth();rightPanel.setWidth(360);}}>恢复默认栏宽</Button>
-                <Button variant="ghost" aria-label="从此处准备模拟" onClick={async()=>{if(!reading&&!(await persist()))return;navigate(`/worlds/${world}/simulate?series=modern-academy&source=${initial.id}`)}}><Orbit size={16}/>从此处准备模拟</Button>
-              </div>
-            </details>
+                {archivedReading ? (
+                  <Button variant="ghost" onClick={() => {
+                    const next = new URLSearchParams(params);
+                    next.delete('mode');
+                    setParams(next);
+                  }}>管理与恢复</Button>
+                ) : (
+                  <Button variant="ghost" aria-label="从此处准备模拟" onClick={() => void prepareSimulation()}><Orbit size={16}/>从此处准备模拟</Button>
+                )}
+            </div>
             <Button variant="ghost" aria-label={context?'收起上下文':'打开上下文'} aria-expanded={context&&!focus} aria-controls="create-context" disabled={focus} title="上下文" onClick={()=>setContext(!context)}><PanelRightClose size={17}/></Button>
           </div>
         </div>
@@ -423,6 +551,19 @@ export function ContentEditor({
             {metadata.story_time&&<span><Clock3 size={15}/>{metadata.story_time}</span>}
           </div>
         </header>
+        {createdSourceObject && <div className="source-object-result">
+          <p role="status">已创建「{createdSourceObject.object.name}」并保存出处。</p>
+          <Link className="text-link" to={`/worlds/${world}/create/objects/${createdSourceObject.object.id}`}>打开卡片 →</Link>
+          <Link className="text-link" to={createdSourceObject.source.to}>查看冻结出处 →</Link>
+        </div>}
+        {adoption.error && <ErrorNotice>{adoption.error}</ErrorNotice>}
+        {adoption.row && <div className="source-object-result">
+          <p role="status">{dirty ? '正文有未保存的修改。' : adoption.unavailable ? '请查看保存的原选段。'
+            : adoption.row.anchor_state === 'current' ? `已定位「${adoption.row.inspiration_title}」的采用选段。`
+            : adoptionStateLabel[adoption.row.anchor_state]}</p>
+          <Link className="text-link" to={adoptionLibraryPath(world, adoption.row)}>在灵感库查看 →</Link>
+          <Link className="text-link" to={adoptionSourcePath(world, adoption.row.id)}>查看原选段 →</Link>
+        </div>}
         {error && (
           <div className="editor-error">
             <ErrorNotice>{error}</ErrorNotice>
@@ -434,7 +575,7 @@ export function ContentEditor({
           </div>
         )}
         {directory}
-        <EditorContent editor={editor} />
+        <EditorContent editor={editor} onMouseDownCapture={menu.rememberContextSelection} onContextMenu={menu.openContextMenu} />
         <footer className="writing-footer">
           <span>{editor?.getText().replace(/\s/g, "").length || 0} 字</span>
           <span>正文保存不会自动确认世界事实</span>
@@ -458,6 +599,7 @@ export function ContentEditor({
             {[
               ["inspector", "资料"],
               ["references", "关联"],
+              ["narrative", "叙事"],
               ["inspirations", "灵感"],
             ].map(([id, label]) => (
               <button
@@ -505,6 +647,7 @@ export function ContentEditor({
           {tab === "references" && (
             <>
             <DocumentMaterials world={world} node={initial} prepare={persist} editable={!reading}
+              createdSourceId={createdSourceObject?.source.id}
               range={editor ? sourceSelection(editor.state.doc,selection.from,selection.to) : undefined}/>
             <ContentReferences
               nodeId={initial.id}
@@ -517,13 +660,20 @@ export function ContentEditor({
             />
             </>
           )}
-          {tab === "inspirations" && (
+          {tab === "narrative" && <ChapterNarrative key={initial.id} world={world} node={initial}
+            editable={!archivedReading && !switching} refresh={narrativeRefresh} />}
+          {tab === "inspirations" && <>
+            <InspirationAdoptionList key={`adoptions-${initial.id}`} world={world} kind="node" id={initial.id} version={initial.version}/>
+            {isWritingNode(initial.kind) ?
+            <WritingInspirations key={initial.id} world={world} node={initial} editable={!archivedReading && !switching}/>
+            :
             <>
               <h2>相关灵感</h2>
               <p className="context-hint">模拟观察和手工想法可以保存为灵感，并在灵感页回到原事件。</p>
               <Link className="text-link" to={`/worlds/${world}/inspirations?node=${initial.id}`}>打开相关灵感 →</Link>
             </>
-          )}
+            }
+          </>}
         </aside>
         {!rightPanel.floating&&<PanelResize panel={rightPanel} controls="create-context"/>}
         </div>
@@ -531,13 +681,36 @@ export function ContentEditor({
       {picker && (
         <ObjectBrowser
           world={world}
-          title={picker === "entity" ? "链接世界对象" : "链接另一篇正文"}
-          types={[picker]}
-          excludeIds={picker === "content" ? [initial.id] : []}
+          title={picker.kind === 'entity' ? '链接世界对象' : '链接另一篇正文'}
+          types={[picker.kind]}
+          excludeIds={picker.kind === 'content' ? [initial.id] : []}
           onClose={() => setPicker(null)}
           onPick={attach}
         />
       )}
+      {sourceSelectionDraft && <ObjectFromSourceDialog world={world} selection={sourceSelectionDraft}
+        onClose={() => setSourceSelectionDraft(undefined)} onSaved={result => {
+          setCreatedSourceObject(result);
+          setSourceSelectionDraft(undefined);
+        }}/>}
+      {adoptionSelection && <InspirationAdoptionDialog world={world} selection={adoptionSelection}
+        onClose={() => setAdoptionSelection(undefined)} onSaved={id => {
+          setAdoptionSelection(undefined);
+          setTab('inspirations');
+          setContext(false);
+          const next = new URLSearchParams(params);
+          next.set('adoption', id);
+          setParams(next, { replace: true });
+        }}/>}
+      {narrativeSelection && <PassageEditor world={world} work={initial.work_id} selection={narrativeSelection}
+        onClose={() => setNarrativeSelection(undefined)} onSaved={() => {
+          setNarrativeSelection(undefined);
+          setNarrativeRefresh(value => value + 1);
+          setFocus(false);
+          onFocusChange(false);
+          setTab('narrative');
+          setContext(true);
+        }} />}
       {history && (
         <Dialog title="内容历史" onClose={() => setHistory(null)}>
           <p className="dialog-intro">恢复会形成新版本。它不会改变 Canon。</p>

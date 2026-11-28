@@ -4,7 +4,8 @@ import { Button, ErrorNotice } from "../../components/ui";
 import { runtimeRequest, type HostSession } from "./api";
 import "./academy.css";
 import { SocialPreparation, type SocialSetup } from './SocialPreparation';
-import { creationApi, type ContentNode, type LibraryItem } from "../creation/api";
+import { PerceptionPreparation, PerceptionSummary, preparePerception, type PerceptionDraft } from "./PerceptionPreparation";
+import { creationApi, isWritingNode, type ContentNode, type LibraryItem } from "../creation/api";
 
 interface Binding {
   entity_id: string | null;
@@ -77,6 +78,8 @@ interface MaterialDraft {
   knownBy: string[];
 }
 
+const emptyPerception: PerceptionDraft = { enabled: false, zones: [], positions: {}, links: [] };
+
 const codePointLength = (text: string) => Array.from(text).length;
 const materialKey = (value: MaterialSelection) =>
   `${value.node_id}:${value.version}:${value.start}:${value.end}:${value.purpose}:${value.known_by.join(",")}`;
@@ -99,7 +102,7 @@ export function ScenarioSetup({
 }: {
   world: string;
   sourceNodeId?: string;
-  onCreated: (line: string) => void;
+  onCreated: (line: string, view: "text" | "2d") => void;
   onBack: () => void;
 }) {
   const [catalog, setCatalog] = useState<Catalog>(),
@@ -124,6 +127,7 @@ export function ScenarioSetup({
     [places, setPlaces] = useState<Place[]>([]),
     [items, setItems] = useState<Item[]>([]);
   const [social, setSocial] = useState<SocialSetup>();
+  const [perception, setPerception] = useState(emptyPerception);
   const [title, setTitle] = useState("学院日常"),
     [purpose, setPurpose] = useState("template_parallel"),
     [background, setBackground] = useState(""),
@@ -192,6 +196,7 @@ export function ScenarioSetup({
           })),
         );
         setItems(data.series[0].items);
+        setPerception(emptyPerception);
       } catch (e) {
         if (active) setError((e as Error).message);
       }
@@ -202,6 +207,7 @@ export function ScenarioSetup({
     };
   }, [world, sourceNodeId]);
   const people = roles.filter((p) => p.enabled);
+  const preparedPerception = preparePerception(perception, places, people);
   const startName = (id: string) => [...places, ...people].find((entry) => entry.id === id)?.name ?? id;
   function sourceLabel(binding: Binding) {
     const entity = catalog?.inputs.entities.find((entry) => entry.id === binding.entity_id);
@@ -355,7 +361,7 @@ export function ScenarioSetup({
     }
   }
   async function save() {
-    if (!session || !catalog) return;
+    if (!session || !catalog || preparedPerception.error) return;
     setBusy(true);
     setError("");
     try {
@@ -372,8 +378,11 @@ export function ScenarioSetup({
             purpose,
             background,
             ...(social ? {social} : {}),
+            ...(preparedPerception.layout ? { perception: preparedPerception.layout } : {}),
             public_knowledge: publicInfo,
             adaptations,
+            ...(selectedSource && selectedSource.id === sourceNodeId && isWritingNode(selectedSource.kind)
+              ? { origin_node_id: selectedSource.id } : {}),
             materials: materials.map(({ node: _node, title: _title, work_title: _workTitle, ...value }) => value),
             roles: roles.map((r) => ({
               ...r,
@@ -397,7 +406,7 @@ export function ScenarioSetup({
         "POST",
         payload,
       );
-      onCreated(result.worldline_id);
+      onCreated(result.worldline_id, preparedPerception.layout ? "text" : "2d");
     } catch (e) {
       setError(
         (e as Error).message === "scenario_sources_changed"
@@ -1034,6 +1043,10 @@ export function ScenarioSetup({
                 />
               </label>
             </section>
+            <PerceptionPreparation value={perception} onChange={(draft) => {
+              setPerception(draft);
+              setConfirmed(false);
+            }} people={people} places={places} error={preparedPerception.error} />
             <SocialPreparation value={social} onChange={setSocial} people={roles} places={places} session={session} available={Boolean(catalog.social_ready)}/>
             <details className="academy-start-summary">
               <summary>核对本次起点</summary>
@@ -1057,6 +1070,7 @@ export function ScenarioSetup({
               })}</ul>
               <p>道具起点 · {items.map((item) => `${item.name} → ${startName(item.holder)}`).join("、")}</p>
               <p>{gate ? "图书馆门禁 · 需要通行卡" : "图书馆门禁 · 无通行卡要求"}</p>
+              {preparedPerception.layout && <PerceptionSummary layout={preparedPerception.layout} nameOf={startName} />}
             </details>
             <label className="academy-check">
               <input
@@ -1075,19 +1089,20 @@ export function ScenarioSetup({
               </span>
             )}
             {needsReadingSetup && <ErrorNotice>填写可读片段后，请启用自主社会演化与认知修订；不会升级旧世界线。</ErrorNotice>}
+            {preparedPerception.error && <span role="status">先完成区位与感知设置。</span>}
             <Button
               variant="primary"
               disabled={
                 busy ||
                 !catalog.ready ||
-                Boolean(sourceNodeId && !selectedSource) ||
+                Boolean(sourceNodeId && selectedSource?.id !== sourceNodeId) ||
                 !confirmed ||
                 !people.length ||
                 !title.trim() ||
                 Boolean(social && !social.start_time.trim()) ||
                 (purpose==='original_projection' && (!social || people.some(p=>!p.entity_id) || places.some(p=>!p.entity_id))) ||
                 Boolean(hardRules.trim()) ||
-                invalidHolder || needsReadingSetup
+                invalidHolder || needsReadingSetup || Boolean(preparedPerception.error)
               }
               onClick={() => void save()}
             >

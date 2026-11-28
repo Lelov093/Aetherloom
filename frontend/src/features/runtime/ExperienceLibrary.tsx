@@ -1,17 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, GraduationCap } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Button, ErrorNotice } from "../../components/ui";
 import { purposeNames, runtimeRequest, type Worldline } from "./api";
 export function ExperienceLibrary({
   world,
   filter,
-  onCreate,
   onOpen,
   onAvailable,
 }: {
   world: string;
   filter: string;
-  onCreate: () => void;
   onOpen: (id: string) => void;
   onAvailable: (ready: boolean) => void;
 }) {
@@ -65,19 +63,7 @@ export function ExperienceLibrary({
   const statusNames:Record<string,string>={paused:'已暂停',running:'运行中',recovery_required:'需要恢复',completed:'已完成',error:'错误'};
   if (!available) return null;
   return (
-    <section className="academy-library" aria-label="世界体验系列">
-      <div className="academy-series-banner">
-        <GraduationCap size={28} />
-        <div>
-          <h2>学院与周边街区</h2>
-          <p>新 Runtime 入口 · 4 张固定地图 · 6 个可选角色槽位 · 文本与 2.5D 同线体验</p>
-          <small>适用于先冻结学院模板、资料和角色起点，再进入可观察的世界线。</small>
-        </div>
-        <Button onClick={onCreate}>
-          配置学院起点
-          <ArrowRight size={15} />
-        </Button>
-      </div>
+    <section className="academy-library" aria-label="已保存的新世界线">
       {error && <ErrorNotice>{error}</ErrorNotice>}
       <div className="academy-library-filters" aria-label="世界线浏览筛选"><label>搜索世界线、角色、地点或事件<input aria-label="世界线检索" value={query} onChange={event=>setQuery(event.target.value)} placeholder="搜索世界线…"/></label><label>运行状态<select aria-label="世界线状态筛选" value={statusFilter} onChange={event=>setStatusFilter(event.target.value)}><option value="all">全部状态</option>{Object.entries(statusNames).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label>排序<select aria-label="世界线排序" value={sort} onChange={event=>setSort(event.target.value)}><option value="recent">最近活动</option><option value="oldest">最早起点</option><option value="title">名称</option></select></label></div>
       {visibleLines.map((line) => (
